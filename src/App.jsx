@@ -2058,6 +2058,44 @@ function formatDbTimestamp(iso) {
   return `${day} ${month}, ${hours}:${minutes} ${ampm}`;
 }
 
+// formatNowTimestamp() stores "4 Oct, 1:29 AM" — NO year. new Date() on that
+// string makes Chrome assume the year 2001, which put the Outbound / In
+// Transit stages in 2001 with a "9131 d" duration. This turns such a string
+// into a real ISO timestamp, taking the year from a reference timestamp
+// (the row's updated_at / created_at). Anything else is returned unchanged.
+function normalizeLegacyStamp(v, refIso) {
+  if (!v) return null;
+  const m = String(v)
+    .trim()
+    .match(/^(\d{1,2})\s+([A-Za-z]{3,9}),?\s+(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return v;
+  const months = [
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+  ];
+  const mi = months.indexOf(m[2].slice(0, 3).toLowerCase());
+  if (mi === -1) return v;
+  let base = refIso ? new Date(refIso) : new Date();
+  if (Number.isNaN(base.getTime())) base = new Date();
+  let h = Number(m[3]) % 12;
+  if (/pm/i.test(m[5])) h += 12;
+  let d = new Date(base.getFullYear(), mi, Number(m[1]), h, Number(m[4]));
+  // e.g. stamped 31 Dec, reference already in January → previous year
+  if (d.getTime() > base.getTime() + 24 * 3600 * 1000)
+    d = new Date(base.getFullYear() - 1, mi, Number(m[1]), h, Number(m[4]));
+  return d.toISOString();
+}
+
 // ------------------------------------------------------------
 // lib/cargo.js — freight pricing, CBM, Order ID (THN######), photos
 // ------------------------------------------------------------
@@ -2357,7 +2395,11 @@ function decoratePackageRow(p) {
     p.freight_fee !== "";
   return {
     ...p,
-    cargo: p.cargo_type ? `${p.cargo_type} · ${sizeLabel(p.size_class)}` : "—",
+    cargo: p.cargo_type
+      ? `${p.cargo_type} · ${sizeLabel(p.size_class)}`
+      : p.package_type === "small_package" && p.size_class
+        ? `Small · ${sizeLabel(p.size_class)}`
+        : "—",
     freight: hasFee ? money(p.freight_fee) : "—",
     shipping_fee: shippingFeeText(p),
     dest_branch: p.dest_branch_code || "—",
@@ -5311,8 +5353,11 @@ function CreatePackageModal({ open, onClose, onCreated }) {
       );
     if (photos.length === 0)
       return setError("ត្រូវការរូបភាពទំនិញ យ៉ាងតិច ១ សន្លឹក");
-    if (!f.cargoType) return setError("Please select Cargo Type");
     if (!f.packageType) return setError("Please select Package Type");
+    // Cargo Type (Normal/Sensitive) only applies to Dimension Based; the
+    // Small Package form has no such selector, so never require it there.
+    if (f.packageType === "dimension_based" && !f.cargoType)
+      return setError("Please select Cargo Type");
     if (
       f.packageType === "small_package" &&
       !["S", "M", "L"].includes(f.sizeClass)
@@ -5378,7 +5423,7 @@ function CreatePackageModal({ open, onClose, onCreated }) {
         dest_branch_code: newOrder.kh_branch_code,
         customer: `${f.customer.customer_code} · ${f.customer.name}`,
         product_name: f.product.trim(),
-        cargo_type: f.cargoType,
+        cargo_type: f.packageType === "dimension_based" ? f.cargoType : null,
         package_type: f.packageType,
         size_class: f.sizeClass,
         length_cm: dimsEntered ? Number(f.length) : null,
@@ -6504,7 +6549,9 @@ function VerifyScanModal({
                     label: "Cargo / Size",
                     value: pkg.cargo_type
                       ? `${pkg.cargo_type} · ${sizeLabel(pkg.size_class)}`
-                      : "—",
+                      : pkg.package_type === "small_package" && pkg.size_class
+                        ? `Small · ${sizeLabel(pkg.size_class)}`
+                        : "—",
                   },
                   {
                     label: "Freight",
@@ -13359,7 +13406,12 @@ function Dashboard() {
       icon: "LogOut",
       label: "Outbound (today)",
       value: String(
-        packages.filter((p) => isSameCalendarDay(p.outboundAt, today)).length,
+        packages.filter((p) =>
+          isSameCalendarDay(
+            normalizeLegacyStamp(p.outboundAt, p.updated_at || p.created_at),
+            today,
+          ),
+        ).length,
       ),
       tone: "ink",
     },
@@ -26562,7 +26614,13 @@ function slaBuildInput(pkg, history, modeByShipment) {
     createdAt: pkg.created_at || null,
     receivedAt: first.receivedAt || pkg.inbound_at || null,
     // `outboundAt` column on packages wins; history is the fallback.
-    outboundAt: pkg.outboundAt || first.outboundAt || null,
+    outboundAt:
+      normalizeLegacyStamp(
+        pkg.outboundAt,
+        pkg.updated_at || pkg.inbound_at || pkg.created_at,
+      ) ||
+      first.outboundAt ||
+      null,
     arrivedAt: first.arrivedAt || null,
     warehouseReceivedAt: first.warehouseReceivedAt || null,
     completedAt:
