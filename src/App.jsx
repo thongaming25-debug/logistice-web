@@ -13215,6 +13215,108 @@ function useAuth() {
 // ------------------------------------------------------------
 const STAGE_DOTS = ["🇨🇳", "🚢", "🇰🇭"];
 
+// Small spinner used inside buttons.
+function AuthSpinner({ size = 18 }) {
+  return (
+    <svg
+      className="animate-spin"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        stroke="currentColor"
+        strokeOpacity=".25"
+        strokeWidth="3"
+      />
+      <path
+        d="M21 12a9 9 0 0 0-9-9"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+// Full-screen sign-in animation shared by the Admin/Staff Login and the
+// Customer Portal login, so both look identical.
+//   phase "loading" → spinning ring + moving progress bar
+//   phase "success" → ring completes, check mark draws, bar fills
+// Styles live in CB_DESIGN_CSS (.cb-auth-*).
+function AuthTransition({ phase = "loading", icon: Icon, title, subtitle }) {
+  const done = phase === "success";
+  return (
+    <div
+      className="cb-auth-ov"
+      role="status"
+      aria-live="polite"
+      aria-busy={!done}
+    >
+      <span className="cb-auth-orb cb-auth-orb-a" />
+      <span className="cb-auth-orb cb-auth-orb-b" />
+      <div className="cb-auth-center">
+        <div className="cb-auth-badge">
+          {!done && <span className="cb-auth-ripple" />}
+          <svg
+            className="cb-auth-ring"
+            viewBox="0 0 120 120"
+            aria-hidden="true"
+          >
+            <circle cx="60" cy="60" r="52" className="cb-auth-ring-track" />
+            {done ? (
+              <circle
+                key="done"
+                cx="60"
+                cy="60"
+                r="52"
+                className="cb-auth-ring-done"
+              />
+            ) : (
+              <circle
+                key="spin"
+                cx="60"
+                cy="60"
+                r="52"
+                className="cb-auth-ring-spin"
+              />
+            )}
+          </svg>
+          <div key={phase} className={`cb-auth-core ${done ? "is-done" : ""}`}>
+            {done ? (
+              <svg
+                className="cb-auth-check"
+                viewBox="0 0 36 36"
+                aria-hidden="true"
+              >
+                <path d="M9 19l6 6 12-14" />
+              </svg>
+            ) : (
+              Icon && <Icon size={34} strokeWidth={2} />
+            )}
+          </div>
+        </div>
+        <div key={`t-${phase}`} className="cb-auth-title">
+          {title}
+        </div>
+        <div key={`s-${phase}`} className="cb-auth-sub">
+          {subtitle}
+        </div>
+        <div className="cb-auth-bar">
+          <span className={done ? "cb-auth-bar-full" : "cb-auth-bar-run"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const authWait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function Login() {
   const { user, login, isMock } = useAuth();
   const systemSettings = useSystemSettings();
@@ -13229,8 +13331,11 @@ function Login() {
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [transition, setTransition] = useState(null); // null | "loading" | "success"
 
-  if (user) {
+  // While the sign-in animation is playing we stay on this page; once it
+  // finishes (transition → null) this redirect fires.
+  if (user && !transition) {
     if (user.isStaff !== true) return <Navigate to="/customer" replace />;
     const from = location.state?.from?.pathname || "/";
     return <Navigate to={from} replace />;
@@ -13244,17 +13349,36 @@ function Login() {
       return;
     }
     setSubmitting(true);
+    setTransition("loading");
+    const t0 = Date.now();
     const { error } = await login(email, password);
-    setSubmitting(false);
+    await authWait(Math.max(0, 700 - (Date.now() - t0))); // avoid a flash
     if (error) {
+      setSubmitting(false);
+      setTransition(null);
       setError(error.message || "Incorrect email or password.");
       return;
     }
-    navigate(location.state?.from?.pathname || "/", { replace: true });
+    setTransition("success");
+    await authWait(1100);
+    setSubmitting(false);
+    setTransition(null); // → redirect above runs (honours state.from)
   }
 
   return (
     <div className="cb-login-page min-h-screen relative overflow-hidden bg-[#f6f9fd] flex items-center justify-center px-5 py-8 sm:px-8">
+      {transition && (
+        <AuthTransition
+          phase={transition}
+          icon={Waypoints}
+          title={transition === "success" ? "Welcome back!" : "Signing you in…"}
+          subtitle={
+            transition === "success"
+              ? "Redirecting to your dashboard"
+              : "Preparing your workspace"
+          }
+        />
+      )}
       {/* Animated background */}
       <style>{`
         @keyframes cb-float-a {
@@ -13411,6 +13535,7 @@ function Login() {
               disabled={submitting}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-signal-blue py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition-all hover:-translate-y-0.5 hover:bg-signal-blue/90 hover:shadow-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
             >
+              {submitting ? <AuthSpinner size={17} /> : null}
               {submitting ? "Signing in..." : "Sign in"}
               {!submitting && <ArrowRight size={17} />}
             </button>
@@ -22792,42 +22917,70 @@ const CustomerApp = (() => {
       </span>
     );
   };
-  const Btn = ({ children, ghost, danger, ...p }) => (
+  const Btn = ({ children, ghost, danger, loading, ...p }) => (
     <button
       {...p}
-      className={`w-full h-12 rounded-xl font-semibold text-[15px] flex items-center justify-center gap-2 active:scale-[.98] transition disabled:opacity-50 ${ghost ? "bg-white text-blue-700 border border-blue-200" : danger ? "bg-white text-red-600 border border-red-200" : "bg-blue-600 text-white shadow-[0_6px_16px_-6px_rgba(37,99,235,.6)]"} ${p.className || ""}`}
+      disabled={p.disabled || loading}
+      className={`w-full h-12 rounded-xl font-semibold text-[15px] flex items-center justify-center gap-2 active:scale-[.98] transition disabled:opacity-60 disabled:active:scale-100 ${ghost ? "bg-white text-blue-700 border border-blue-200 hover:bg-blue-50" : danger ? "bg-white text-red-600 border border-red-200 hover:bg-red-50" : "bg-blue-600 hover:bg-blue-700 text-white shadow-[0_8px_20px_-8px_rgba(37,99,235,.65)]"} ${p.className || ""}`}
     >
+      {loading && <AuthSpinner size={18} />}
       {children}
     </button>
   );
-  const Field = ({ label, icon: I, pw, v, set, ph, type = "text" }) => {
+  // Input with an optional label + leading icon. The real <input> uses the
+  // .cb-field-input class (see CB_DESIGN_CSS) so the browser/Tailwind-forms
+  // inner focus box never shows — only the rounded wrapper highlights.
+  const Field = ({
+    label,
+    icon: I,
+    pw,
+    v,
+    set,
+    ph,
+    type = "text",
+    hint,
+    ...rest
+  }) => {
     const [show, setShow] = useState(false);
     return (
-      <label className="block">
+      <label className="block group">
         {label && (
           <span className="text-[13px] font-semibold text-slate-700 mb-1.5 block">
             {label}
           </span>
         )}
-        <span className="flex items-center gap-2.5 h-12 px-3.5 rounded-xl bg-white border border-slate-200 focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100">
-          {I && <I size={18} className="text-slate-400" />}
+        <span className="flex items-center gap-2.5 h-12 px-3.5 rounded-xl bg-slate-50 border border-slate-200 transition-all hover:border-slate-300 focus-within:bg-white focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10">
+          {I && (
+            <I
+              size={18}
+              className="shrink-0 text-slate-400 transition-colors group-focus-within:text-blue-600"
+            />
+          )}
           <input
+            {...rest}
             value={v}
             onChange={(e) => set(e.target.value)}
             placeholder={ph}
             type={pw && !show ? "password" : type}
-            className="flex-1 bg-transparent outline-none text-[15px] text-slate-900 min-w-0"
+            className="cb-field-input flex-1 min-w-0 h-full text-[15px] text-slate-900 placeholder:text-slate-400"
           />
           {pw && (
             <button
               type="button"
+              tabIndex={-1}
               onClick={() => setShow(!show)}
-              className="text-slate-400"
+              aria-label={show ? "Hide password" : "Show password"}
+              className="shrink-0 text-slate-400 hover:text-slate-600 transition-colors"
             >
               {show ? <EyeOff size={18} /> : <Eye size={18} />}
             </button>
           )}
         </span>
+        {hint && (
+          <span className="mt-1.5 block text-[12px] text-slate-400">
+            {hint}
+          </span>
+        )}
       </label>
     );
   };
@@ -22942,14 +23095,27 @@ const CustomerApp = (() => {
       email: "",
     });
     const [err, setErr] = useState("");
+    const [notice, setNotice] = useState("");
     const [busy, setBusy] = useState(false);
-    const s = (k) => (v) => setF({ ...f, [k]: v });
-    if (me) return <Navigate to={P()} replace />;
-    const go = async () => {
+    const [overlay, setOverlay] = useState(null); // null | "loading" | "success"
+    const s = (k) => (v) => setF((p) => ({ ...p, [k]: v }));
+    // Stay on this page while the sign-in animation plays.
+    if (me && !overlay) return <Navigate to={P()} replace />;
+
+    const switchMode = (m) => {
+      setMode(m);
       setErr("");
+      setNotice("");
+    };
+
+    const go = async (ev) => {
+      ev?.preventDefault?.();
+      if (busy) return;
+      setErr("");
+      setNotice("");
       if (mode === "forgot") {
         setMode("login");
-        setErr(
+        setNotice(
           tr(
             "Please contact support to reset your password.",
             "សូមទាក់ទងផ្នែកជំនួយ ដើម្បីកំណត់លេខសម្ងាត់ឡើងវិញ។",
@@ -22976,136 +23142,246 @@ const CustomerApp = (() => {
         return;
       }
       setBusy(true);
+      setOverlay("loading");
+      const t0 = Date.now();
       const e =
         mode === "login"
           ? await login(f.id, f.pw)
           : await signup(f.name, f.phone, f.email, f.pw);
+      const wait = 700 - (Date.now() - t0); // avoid a flash on fast networks
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (e) {
+        setBusy(false);
+        setOverlay(null);
+        if (e === "signup-needs-confirm") {
+          setMode("login");
+          setNotice(
+            tr(
+              "Account created. Please log in again.",
+              "គណនីបានបង្កើត សូមចូលម្ដងទៀត។",
+            ),
+          );
+        } else setErr(e);
+        return;
+      }
+      setOverlay("success");
+      await new Promise((r) => setTimeout(r, 1100));
       setBusy(false);
-      if (e === "signup-needs-confirm")
-        setErr(
-          tr(
-            "Account created. Please log in again.",
-            "គណនីបានបង្កើត សូមចូលម្ដងទៀត។",
-          ),
-        );
-      else if (e) setErr(e);
+      setOverlay(null); // → <Navigate/> above takes over
     };
+
+    const heading =
+      mode === "login"
+        ? tr("Welcome back", "សូមស្វាគមន៍ការត្រឡប់មកវិញ")
+        : mode === "signup"
+          ? tr("Create your account", "បង្កើតគណនីរបស់អ្នក")
+          : tr("Forgot password", "ភ្លេចលេខសម្ងាត់");
+    const sub =
+      mode === "login"
+        ? tr(
+            "Log in to track your packages",
+            "ចូលគណនីដើម្បីតាមដានទំនិញរបស់អ្នក",
+          )
+        : mode === "signup"
+          ? tr("It only takes a minute", "ចំណាយពេលតែមួយភ្លែតប៉ុណ្ណោះ")
+          : tr(
+              "We'll point you to our support team",
+              "យើងនឹងណែនាំអ្នកឱ្យទាក់ទងផ្នែកជំនួយ",
+            );
+
     return (
       <div className="min-h-screen bg-slate-50" style={FONT}>
-        <div className="max-w-md mx-auto">
-          <div className="relative bg-gradient-to-b from-blue-700 to-blue-500 text-white px-6 pt-14 pb-16 rounded-b-[36px] text-center">
-            <div className="absolute top-4 right-4">
+        {overlay && (
+          <AuthTransition
+            phase={overlay}
+            icon={Ship}
+            title={
+              overlay === "success"
+                ? tr("Welcome!", "សូមស្វាគមន៍!")
+                : mode === "signup"
+                  ? tr("Creating your account…", "កំពុងបង្កើតគណនី…")
+                  : tr("Signing you in…", "កំពុងចូលគណនី…")
+            }
+            subtitle={
+              overlay === "success"
+                ? tr("Taking you to your portal", "កំពុងនាំអ្នកទៅកាន់ផតថល")
+                : mode === "signup"
+                  ? tr("Just a moment", "សូមរង់ចាំបន្តិច")
+                  : tr("Preparing your portal", "កំពុងរៀបចំផតថលរបស់អ្នក")
+            }
+          />
+        )}
+        <div className="max-w-md mx-auto pb-10">
+          {/* Hero */}
+          <div className="relative overflow-hidden bg-gradient-to-br from-blue-700 via-blue-600 to-sky-500 text-white px-6 pt-12 pb-20 rounded-b-[40px] text-center">
+            <div className="pointer-events-none absolute -top-16 -right-16 h-52 w-52 rounded-full bg-white/10" />
+            <div className="pointer-events-none absolute -bottom-24 -left-12 h-56 w-56 rounded-full bg-white/10" />
+            <div className="absolute top-4 right-4 z-10">
               <LangBtn />
             </div>
-            <div className="mx-auto w-16 h-16 rounded-2xl bg-white/15 grid place-items-center mb-3">
-              <Ship size={32} />
+            <div className="relative mx-auto mb-4 grid h-[72px] w-[72px] place-items-center rounded-[22px] bg-white/15 ring-1 ring-white/30 shadow-lg shadow-blue-900/20">
+              <Ship size={34} />
             </div>
-            <div className="text-3xl font-extrabold tracking-tight">
+            <div className="relative text-[28px] font-extrabold tracking-tight leading-none">
               Cargo Bridge
             </div>
-            <p className="text-blue-100 text-xs">
+            <p className="relative mt-1.5 text-blue-100 text-xs">
               {tr("Global to Your Door", "ដឹកជញ្ជូនដល់មាត់ទ្វារអ្នក")}
             </p>
-            <p className="mt-5 font-semibold">
+            <p className="relative mt-5 font-semibold">
               {tr("Customer Portal", "ផតថលអតិថិជន")}
             </p>
-            <p className="text-blue-100 text-sm">
+            <p className="relative text-blue-100 text-sm">
               {tr(
                 "Track your shipments anytime, anywhere",
                 "តាមដានទំនិញរបស់អ្នក គ្រប់ពេល គ្រប់ទីកន្លែង",
               )}
             </p>
           </div>
-          <Card className="mx-4 -mt-8 p-5 space-y-4">
-            <h2 className="font-bold text-lg text-slate-900">
-              {mode === "login"
-                ? tr("Log In", "ចូលគណនី")
-                : mode === "signup"
-                  ? tr("Create Account", "បង្កើតគណនី")
-                  : tr("Forgot Password", "ភ្លេចលេខសម្ងាត់")}
-            </h2>
-            {mode === "signup" && (
-              <Field
-                icon={User}
-                ph={tr("Full name", "ឈ្មោះពេញ")}
-                v={f.name}
-                set={s("name")}
-              />
-            )}
-            {mode === "signup" ? (
-              <Field
-                icon={Phone}
-                ph={tr("Phone number", "លេខទូរស័ព្ទ")}
-                v={f.phone}
-                set={s("phone")}
-              />
+
+          {/* Card (z-10 so the hero never covers its top edge) */}
+          <Card
+            className="relative z-10 mx-4 -mt-10 p-5 sm:p-6"
+            style={{ boxShadow: "0 24px 50px -22px rgba(15,40,90,.35)" }}
+          >
+            {mode === "forgot" ? (
+              <button
+                type="button"
+                onClick={() => switchMode("login")}
+                className="mb-4 -mt-1 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-blue-700 transition-colors"
+              >
+                <ArrowLeft size={16} />
+                {tr("Back to log in", "ត្រឡប់ទៅចូលគណនី")}
+              </button>
             ) : (
-              <Field
-                icon={Phone}
-                ph={tr("Phone number", "លេខទូរស័ព្ទ")}
-                v={f.id}
-                set={s("id")}
-              />
-            )}
-            {mode === "signup" && (
-              <Field
-                icon={Mail}
-                ph={tr("Email (optional)", "អ៊ីមែល (មិនបង្ខំ)")}
-                v={f.email}
-                set={s("email")}
-              />
-            )}
-            {mode !== "forgot" && (
-              <Field
-                icon={Lock}
-                pw
-                ph={tr("Password", "លេខសម្ងាត់")}
-                v={f.pw}
-                set={s("pw")}
-              />
-            )}
-            {err && (
-              <p className="text-[13px] text-red-600 bg-red-50 rounded-lg px-3 py-2">
-                {err}
-              </p>
-            )}
-            <Btn disabled={busy} onClick={go}>
-              {busy
-                ? tr("Please wait...", "សូមរង់ចាំ...")
-                : mode === "login"
-                  ? tr("Log In", "ចូលគណនី")
-                  : mode === "signup"
-                    ? tr("Sign Up", "បង្កើតគណនី")
-                    : tr("Send reset link", "ផ្ញើតំណកំណត់ឡើងវិញ")}
-            </Btn>
-            {mode === "login" && (
-              <button
-                onClick={() => setMode("forgot")}
-                className="w-full text-center text-sm text-blue-700 font-medium"
+              <div
+                role="tablist"
+                className="mb-5 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1"
               >
-                {tr("Forgot password?", "ភ្លេចលេខសម្ងាត់?")}
-              </button>
+                {[
+                  ["login", tr("Log In", "ចូលគណនី")],
+                  ["signup", tr("Sign Up", "បង្កើតគណនី")],
+                ].map(([m, label]) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === m}
+                    onClick={() => switchMode(m)}
+                    className={`h-10 rounded-lg text-sm font-semibold transition-all ${mode === m ? "bg-white text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             )}
-            <p className="text-center text-sm text-slate-500">
-              {mode === "signup"
-                ? tr("Already have an account?", "មានគណនីរួចហើយ?")
-                : mode === "login"
-                  ? tr("Don't have an account?", "មិនទាន់មានគណនី?")
-                  : tr("Remembered your password?", "ចាំលេខសម្ងាត់ហើយ?")}{" "}
-              <button
-                onClick={() =>
-                  setMode(
-                    mode === "signup" || mode === "forgot" ? "login" : "signup",
-                  )
-                }
-                className="text-blue-700 font-semibold"
-              >
-                {mode === "login"
-                  ? tr("Sign Up", "បង្កើតគណនី")
-                  : tr("Log In", "ចូលគណនី")}
-              </button>
-            </p>
+
+            <div className="mb-4">
+              <h2 className="font-bold text-xl text-slate-900 leading-tight">
+                {heading}
+              </h2>
+              <p className="mt-1 text-sm text-slate-500">{sub}</p>
+            </div>
+
+            <form onSubmit={go} noValidate className="space-y-4">
+              {mode === "signup" && (
+                <Field
+                  icon={User}
+                  label={tr("Full name", "ឈ្មោះពេញ")}
+                  ph={tr("Your full name", "ឈ្មោះពេញរបស់អ្នក")}
+                  v={f.name}
+                  set={s("name")}
+                  autoComplete="name"
+                />
+              )}
+              {mode !== "forgot" && (
+                <Field
+                  icon={Phone}
+                  label={tr("Phone number", "លេខទូរស័ព្ទ")}
+                  ph="012 345 678"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete={mode === "login" ? "username" : "tel"}
+                  v={mode === "signup" ? f.phone : f.id}
+                  set={s(mode === "signup" ? "phone" : "id")}
+                />
+              )}
+              {mode === "signup" && (
+                <Field
+                  icon={Mail}
+                  label={tr("Email (optional)", "អ៊ីមែល (មិនបង្ខំ)")}
+                  ph="name@example.com"
+                  type="email"
+                  autoComplete="email"
+                  v={f.email}
+                  set={s("email")}
+                />
+              )}
+              {mode !== "forgot" && (
+                <Field
+                  icon={Lock}
+                  pw
+                  label={tr("Password", "លេខសម្ងាត់")}
+                  ph="••••••••"
+                  autoComplete={
+                    mode === "login" ? "current-password" : "new-password"
+                  }
+                  hint={
+                    mode === "signup"
+                      ? tr("At least 4 characters", "យ៉ាងតិច 4 តួអក្សរ")
+                      : undefined
+                  }
+                  v={f.pw}
+                  set={s("pw")}
+                />
+              )}
+
+              {mode === "login" && (
+                <div className="-mt-1 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => switchMode("forgot")}
+                    className="text-sm font-medium text-blue-700 hover:text-blue-800 transition-colors"
+                  >
+                    {tr("Forgot password?", "ភ្លេចលេខសម្ងាត់?")}
+                  </button>
+                </div>
+              )}
+
+              {err && (
+                <div
+                  role="alert"
+                  className="cb-auth-rise flex items-start gap-2 rounded-xl bg-red-50 px-3 py-2.5 text-[13px] text-red-600"
+                >
+                  <TriangleAlert size={15} className="mt-0.5 shrink-0" />
+                  <span>{err}</span>
+                </div>
+              )}
+              {notice && (
+                <div
+                  role="status"
+                  className="cb-auth-rise flex items-start gap-2 rounded-xl bg-blue-50 px-3 py-2.5 text-[13px] text-blue-700"
+                >
+                  <Icons.Info size={15} className="mt-0.5 shrink-0" />
+                  <span>{notice}</span>
+                </div>
+              )}
+
+              <Btn type="submit" loading={busy}>
+                {busy
+                  ? tr("Please wait...", "សូមរង់ចាំ...")
+                  : mode === "login"
+                    ? tr("Log In", "ចូលគណនី")
+                    : mode === "signup"
+                      ? tr("Create Account", "បង្កើតគណនី")
+                      : tr("Send reset link", "ផ្ញើតំណកំណត់ឡើងវិញ")}
+              </Btn>
+            </form>
           </Card>
+
+          <p className="mt-6 text-center text-[11px] text-slate-400">
+            © 2026 Cargo Bridge
+          </p>
         </div>
       </div>
     );
@@ -38191,6 +38467,43 @@ body{background:var(--cb-bg);color:var(--cb-text);}
 .cb-page-title{letter-spacing:-.025em;}
 .cb-table-row:hover{background:#f8fbff;}
 @media(max-width:1023px){.cb-sidebar{box-shadow:20px 0 60px rgba(15,31,61,.22);}}
+/* ---- shared login transition (Admin + Customer) ---- */
+.cb-auth-ov{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#1e40af 0%,#2563eb 52%,#38bdf8 100%);color:#fff;overflow:hidden;animation:cb-auth-fade .25s ease both;}
+.cb-auth-orb{position:absolute;border-radius:9999px;background:rgba(255,255,255,.10);}
+.cb-auth-orb-a{width:360px;height:360px;top:-120px;right:-100px;animation:cb-auth-float 9s ease-in-out infinite;}
+.cb-auth-orb-b{width:300px;height:300px;bottom:-110px;left:-90px;animation:cb-auth-float 11s ease-in-out infinite reverse;}
+.cb-auth-center{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:0 24px;}
+.cb-auth-badge{position:relative;width:128px;height:128px;display:grid;place-items:center;}
+.cb-auth-ripple{position:absolute;width:84px;height:84px;border-radius:28px;background:rgba(255,255,255,.22);animation:cb-auth-ripple 1.8s ease-out infinite;}
+.cb-auth-ring{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-90deg);}
+.cb-auth-ring circle{fill:none;stroke-width:5;stroke-linecap:round;}
+.cb-auth-ring-track{stroke:rgba(255,255,255,.22);}
+.cb-auth-ring-spin{stroke:#fff;stroke-dasharray:90 237;transform-origin:60px 60px;animation:cb-auth-spin 1.1s linear infinite;}
+.cb-auth-ring-done{stroke:#fff;stroke-dasharray:327;stroke-dashoffset:327;animation:cb-auth-dash .55s cubic-bezier(.4,0,.2,1) forwards;}
+.cb-auth-core{position:relative;width:84px;height:84px;border-radius:28px;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);display:grid;place-items:center;box-shadow:0 14px 34px -12px rgba(15,23,42,.45);animation:cb-auth-pop .45s cubic-bezier(.2,.9,.3,1.2) both;}
+.cb-auth-core.is-done{background:#fff;border-color:#fff;}
+.cb-auth-check{width:42px;height:42px;}
+.cb-auth-check path{fill:none;stroke:#2563eb;stroke-width:3.4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;animation:cb-auth-dash .45s .15s ease forwards;}
+.cb-auth-title{margin-top:26px;font-size:20px;font-weight:700;letter-spacing:-.01em;animation:cb-auth-rise .4s ease both;}
+.cb-auth-sub{margin-top:6px;font-size:14px;opacity:.85;animation:cb-auth-rise .4s .08s ease both;}
+.cb-auth-bar{margin-top:26px;width:176px;height:4px;border-radius:9999px;background:rgba(255,255,255,.22);overflow:hidden;}
+.cb-auth-bar span{display:block;height:100%;border-radius:inherit;background:#fff;}
+.cb-auth-bar-run{width:40%;animation:cb-auth-bar 1.2s ease-in-out infinite;}
+.cb-auth-bar-full{width:100%;transform-origin:left;animation:cb-auth-grow .5s ease both;}
+.cb-auth-rise{animation:cb-auth-rise .3s ease both;}
+@keyframes cb-auth-fade{from{opacity:0}to{opacity:1}}
+@keyframes cb-auth-spin{to{transform:rotate(360deg)}}
+@keyframes cb-auth-dash{to{stroke-dashoffset:0}}
+@keyframes cb-auth-pop{0%{transform:scale(.6);opacity:0}60%{transform:scale(1.08);opacity:1}100%{transform:scale(1)}}
+@keyframes cb-auth-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes cb-auth-bar{0%{transform:translateX(-100%)}100%{transform:translateX(250%)}}
+@keyframes cb-auth-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes cb-auth-ripple{0%{transform:scale(.9);opacity:.55}100%{transform:scale(1.7);opacity:0}}
+@keyframes cb-auth-float{0%,100%{transform:translate3d(0,0,0)}50%{transform:translate3d(0,18px,0)}}
+@media (prefers-reduced-motion:reduce){.cb-auth-ov *{animation-duration:.01ms!important;animation-iteration-count:1!important;}}
+/* ---- customer input: remove the native inner focus box ---- */
+.cb-field-input,.cb-field-input:focus,.cb-field-input:focus-visible,.cb-field-input:active{outline:none!important;box-shadow:none!important;border:0!important;background:transparent!important;padding:0!important;-webkit-appearance:none;appearance:none;border-radius:0!important;}
+.cb-field-input:-webkit-autofill,.cb-field-input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px #fff inset!important;-webkit-text-fill-color:#0f172a;}
 `;
 
 function App() {
