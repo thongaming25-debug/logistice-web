@@ -23380,7 +23380,7 @@ const CustomerApp = (() => {
           </Card>
 
           <p className="mt-6 text-center text-[11px] text-slate-400">
-            © 2026 Cargo Bridge
+            © Develop by Thon KH
           </p>
         </div>
       </div>
