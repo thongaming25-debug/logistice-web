@@ -7734,12 +7734,20 @@ function WarehouseManagementPage() {
     setBusyId(w.id);
     setError("");
     try {
-      await wh.setWarehouseStatus(
-        w,
-        w.status === "Active" ? "Disabled" : "Active",
+      const nextStatus = w.status === "Active" ? "Disabled" : "Active";
+      await wh.setWarehouseStatus(w, nextStatus);
+      emitCBToast(
+        "ok",
+        "Status updated",
+        `${w.name || w.code} → ${nextStatus}`,
       );
     } catch (err) {
       setError(err.message || "មិនអាចប្តូរ Status បានទេ");
+      emitCBToast(
+        "err",
+        "Update failed",
+        err.message || "មិនអាចប្តូរ Status បានទេ",
+      );
     } finally {
       setBusyId(null);
     }
@@ -7903,7 +7911,14 @@ function WarehouseManagementPage() {
         type={tab}
         existing={form?.existing || null}
         onClose={() => setForm(null)}
-        onSave={wh.saveWarehouse}
+        onSave={async (values, existing) => {
+          await wh.saveWarehouse(values, existing);
+          emitCBToast(
+            "ok",
+            existing ? "Updated" : "Created",
+            `${values.name || values.code} was ${existing ? "updated" : "created"} successfully.`,
+          );
+        }}
       />
       <WarehouseDetailModal
         wh={viewing}
@@ -7947,12 +7962,20 @@ function KhWarehousePage() {
     setBusyId(w.id);
     setError("");
     try {
-      await wh.setWarehouseStatus(
-        w,
-        w.status === "Active" ? "Disabled" : "Active",
+      const nextStatus = w.status === "Active" ? "Disabled" : "Active";
+      await wh.setWarehouseStatus(w, nextStatus);
+      emitCBToast(
+        "ok",
+        "Status updated",
+        `${w.name || w.code} → ${nextStatus}`,
       );
     } catch (err) {
       setError(err.message || "មិនអាចប្តូរ Status បានទេ");
+      emitCBToast(
+        "err",
+        "Update failed",
+        err.message || "មិនអាចប្តូរ Status បានទេ",
+      );
     } finally {
       setBusyId(null);
     }
@@ -8081,7 +8104,14 @@ function KhWarehousePage() {
         type="cambodia"
         existing={form?.existing || null}
         onClose={() => setForm(null)}
-        onSave={wh.saveWarehouse}
+        onSave={async (values, existing) => {
+          await wh.saveWarehouse(values, existing);
+          emitCBToast(
+            "ok",
+            existing ? "Updated" : "Created",
+            `${values.name || values.code} was ${existing ? "updated" : "created"} successfully.`,
+          );
+        }}
       />
       <WarehouseDetailModal
         wh={viewing}
@@ -12608,7 +12638,7 @@ function ListPage({
                   )
                 : columns
             }
-            onSave={(patch) => {
+            onSave={async (patch) => {
               if (!canEditRows) throw new Error(NO_PERM_MSG);
               if (isUsersModule) {
                 // Role / department / warehouse changes need user.assign_role.
@@ -12616,7 +12646,13 @@ function ListPage({
                 else if ("department" in patch || "warehouse_code" in patch)
                   requirePermission(user, "user.assign_role");
               }
-              return updateRow(editingRow, patch);
+              const saved = await updateRow(editingRow, patch);
+              emitCBToast(
+                "ok",
+                "Updated",
+                `${String(editingRow.id ?? title)} was updated successfully.`,
+              );
+              return saved;
             }}
             onClose={() => setEditingRow(null)}
           />
@@ -12628,11 +12664,18 @@ function ListPage({
                 ? deletingRow.tk
                 : String(deletingRow.id ?? deletingRow.name ?? "")
             }
-            onConfirm={() => {
+            onConfirm={async () => {
               if (!canDeleteRows) throw new Error(NO_PERM_MSG);
-              return isLinkedTk
+              const delLabel = String(
+                isLinkedTk
+                  ? deletingRow.tk
+                  : (deletingRow.id ?? deletingRow.name ?? ""),
+              );
+              const res = await (isLinkedTk
                 ? deletePackage(deletingRow.tk)
-                : deleteRow(deletingRow);
+                : deleteRow(deletingRow));
+              emitCBToast("ok", "Deleted", `${delLabel} was deleted.`);
+              return res;
             }}
             onClose={() => setDeletingRow(null)}
           />
@@ -12672,13 +12715,27 @@ function ListPage({
           open={showCreate}
           existingRows={tableRows}
           onClose={() => setShowCreate(false)}
-          onCreated={(row) => (supabase ? refetch() : prependRow(row))}
+          onCreated={(row) => {
+            emitCBToast(
+              "ok",
+              "User created",
+              `${row?.name || row?.email || "User"} was created successfully.`,
+            );
+            return supabase ? refetch() : prependRow(row);
+          }}
         />
       ) : isTransferModule ? (
         <CreateTransferModal
           open={showCreate}
           onClose={() => setShowCreate(false)}
-          onCreated={(row) => (supabase ? refetch() : prependRow(row))}
+          onCreated={(row) => {
+            emitCBToast(
+              "ok",
+              "Transfer completed",
+              `${row?.tk || "TK"} was transferred.`,
+            );
+            return supabase ? refetch() : prependRow(row);
+          }}
         />
       ) : path === "/packages" || path === "/inbound-origin" ? (
         <CreatePackageModal
@@ -12689,7 +12746,14 @@ function ListPage({
         <CreateArrivalModal
           open={showCreate}
           onClose={() => setShowCreate(false)}
-          onCreated={(row) => (supabase ? refetch() : prependRow(row))}
+          onCreated={(row) => {
+            emitCBToast(
+              "ok",
+              "Arrival created",
+              `${row?.shipment_no || "Arrival"} was recorded.`,
+            );
+            return supabase ? refetch() : prependRow(row);
+          }}
         />
       ) : (
         <CreateRowModal
@@ -12698,7 +12762,11 @@ function ListPage({
           columns={columns}
           existingRows={statusSeedRows}
           onClose={() => setShowCreate(false)}
-          onSubmit={addRow}
+          onSubmit={async (values) => {
+            const created = await addRow(values);
+            emitCBToast("ok", "Created", `${title} was created successfully.`);
+            return created;
+          }}
         />
       )}
     </div>
@@ -16699,6 +16767,11 @@ function OrderDetail() {
           onSave={async (patch) => {
             await superUpdateOrder(data, patch);
             setData((d) => ({ ...d, ...patch }));
+            emitCBToast(
+              "ok",
+              "Order updated",
+              `${data.id} was updated successfully.`,
+            );
           }}
           onClose={() => setShowEdit(false)}
         />
@@ -16708,6 +16781,7 @@ function OrderDetail() {
           label={data.id}
           onConfirm={async () => {
             await superDeleteOrder(data);
+            emitCBToast("ok", "Order deleted", `${data.id} was deleted.`);
             navigate(-1);
           }}
           onClose={() => setShowDelete(false)}
@@ -20483,11 +20557,17 @@ function ContainersPageInner() {
         existing={modal?.existing || null}
         whRows={store.whRows}
         onClose={() => setModal(null)}
-        onSave={(v, existing) =>
-          existing
-            ? store.updateContainer(existing, v)
-            : store.createContainer(v)
-        }
+        onSave={async (v, existing) => {
+          const res = existing
+            ? await store.updateContainer(existing, v)
+            : await store.createContainer(v);
+          emitCBToast(
+            "ok",
+            existing ? "Container updated" : "Container created",
+            `${v?.container_number || existing?.container_number || "Container"} was ${existing ? "updated" : "created"} successfully.`,
+          );
+          return res;
+        }}
       />
     </div>
   );
@@ -20581,6 +20661,7 @@ function ContainerDetailInner() {
     (CONTAINER_TRANSFER_KH_TO.includes(st) && canKh);
   const showFlash = (msg) => {
     setFlash(msg);
+    emitCBToast("ok", "Container updated", String(msg || ""));
     setTimeout(() => setFlash(""), 3500);
   };
   const askRemove = (tk) =>
@@ -20600,6 +20681,7 @@ function ContainerDetailInner() {
   const run = (next, msg) => async (reason) => {
     await store.changeStatus(container, next, reason);
     setFlash(msg);
+    emitCBToast("ok", "Status updated", String(msg || next));
     setTimeout(() => setFlash(""), 3500);
   };
 
@@ -20775,6 +20857,11 @@ function ContainerDetailInner() {
                   danger: true,
                   onConfirm: async () => {
                     await store.deleteContainer(container);
+                    emitCBToast(
+                      "ok",
+                      "Container deleted",
+                      `${container.container_number} was deleted.`,
+                    );
                     navigate("/containers");
                   },
                 })
@@ -21634,34 +21721,59 @@ const CustomerApp = (() => {
         is_default: !!a.def,
         kh_branch_code: a.branch || null,
       };
-      if (a.id)
-        await supabase.from("customer_addresses").update(row).eq("id", a.id);
-      else
-        await supabase
-          .from("customer_addresses")
-          .insert({ ...row, customer_id: me.id });
-      // Default address → its branch becomes the customer's default
-      // Receiving Branch for NEW orders (old orders never change).
-      if (a.def && a.branch)
-        await supabase
-          .from("customers")
-          .update({ default_kh_branch: a.branch })
-          .eq("id", me.id);
-      await loadAddrs();
+      try {
+        let res;
+        if (a.id)
+          res = await supabase
+            .from("customer_addresses")
+            .update(row)
+            .eq("id", a.id);
+        else
+          res = await supabase
+            .from("customer_addresses")
+            .insert({ ...row, customer_id: me.id });
+        if (res.error) throw res.error;
+        // Default address → its branch becomes the customer's default
+        // Receiving Branch for NEW orders (old orders never change).
+        if (a.def && a.branch)
+          await supabase
+            .from("customers")
+            .update({ default_kh_branch: a.branch })
+            .eq("id", me.id);
+        await loadAddrs();
+        emitCBToast(
+          "ok",
+          a.id ? "បានកែប្រែអាសយដ្ឋាន" : "បានបន្ថែមអាសយដ្ឋាន",
+          a.label || "",
+        );
+      } catch (err) {
+        emitCBToast(
+          "err",
+          "រក្សាទុកមិនបានជោគជ័យ",
+          err?.message || "សូមព្យាយាមម្តងទៀត",
+        );
+      }
     };
     const delAddr = async (id) => {
-      await supabase.from("customer_addresses").delete().eq("id", id);
+      const { error } = await supabase
+        .from("customer_addresses")
+        .delete()
+        .eq("id", id);
+      if (error) return emitCBToast("err", "លុបមិនបានជោគជ័យ", error.message);
       await loadAddrs();
+      emitCBToast("ok", "បានលុបអាសយដ្ឋាន");
     };
     const setDef = async (id) => {
       await supabase
         .from("customer_addresses")
         .update({ is_default: false })
         .eq("customer_id", me.id);
-      await supabase
+      const { error } = await supabase
         .from("customer_addresses")
         .update({ is_default: true })
         .eq("id", id);
+      if (error)
+        return emitCBToast("err", "កំណត់លំនាំដើមមិនបានជោគជ័យ", error.message);
       const picked = addrs.find((x) => x.id === id);
       if (picked?.branch)
         await supabase
@@ -21669,6 +21781,7 @@ const CustomerApp = (() => {
           .update({ default_kh_branch: picked.branch })
           .eq("id", me.id);
       await loadAddrs();
+      emitCBToast("ok", "បានកំណត់ជាអាសយដ្ឋានលំនាំដើម");
     };
 
     const v = {
@@ -22107,7 +22220,7 @@ const CustomerApp = (() => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold">Hello {me.name} 👋</h1>
-              <p className="text-blue-100 text-sm">Welcome to Cargo Bridge</p>
+              <p className="text-blue-100 text-sm">Welcome to Brathna</p>
             </div>
             <span className="w-10 h-10 grid place-items-center rounded-full bg-white/15">
               <Bell size={20} />
@@ -22557,6 +22670,7 @@ const CustomerApp = (() => {
               status: found.status,
               created_at: found.updated_at,
               created_by: found.updated_by,
+              note: found.refund_reason,
             },
           ]);
         if (alive) setLoadingAir(false);
@@ -22599,7 +22713,11 @@ const CustomerApp = (() => {
           </Card>
           <Card className="p-5">
             <h2 className="font-bold mb-5">Shipment AIR Tracking</h2>
-            <AirStatusTimeline status={row.status} history={history} />
+            <AirStatusTimeline
+              status={row.status}
+              history={history}
+              refundReason={row.refund_reason}
+            />
           </Card>
           <Card className="p-5">
             <h2 className="font-bold mb-4">Order Information</h2>
@@ -23005,9 +23123,15 @@ const CustomerApp = (() => {
                   <Pencil size={16} />
                 </button>
                 <button
-                  onClick={() =>
-                    window.confirm("លុបអាសយដ្ឋាននេះ?") && delAddr(a.id)
-                  }
+                  onClick={async () => {
+                    const ok = await confirmDialog({
+                      title: "លុបអាសយដ្ឋាននេះ?",
+                      message: "សកម្មភាពនេះមិនអាចត្រឡប់វិញបានទេ។",
+                      confirmText: "លុប",
+                      cancelText: "បោះបង់",
+                    });
+                    if (ok) delAddr(a.id);
+                  }}
                   className="w-9 h-9 grid place-items-center rounded-full bg-red-50 text-red-500"
                 >
                   <Trash2 size={16} />
@@ -25828,6 +25952,109 @@ function emitCBToast(type, title, text) {
   );
 }
 
+// ------------------------------------------------------------
+// Global Confirm Dialog — replaces the default browser confirm()
+// Usage: if (!(await confirmDialog({ title, message }))) return;
+// ------------------------------------------------------------
+function confirmDialog(opts = {}) {
+  if (typeof window === "undefined") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    window.dispatchEvent(
+      new CustomEvent("cb-global-confirm", { detail: { ...opts, resolve } }),
+    );
+  });
+}
+
+function GlobalConfirmHost() {
+  const [req, setReq] = useState(null);
+  const reqRef = useRef(null);
+  reqRef.current = req;
+
+  useEffect(() => {
+    const onOpen = (event) => {
+      // If another dialog is somehow open, cancel it first.
+      reqRef.current?.resolve?.(false);
+      setReq(event.detail);
+    };
+    window.addEventListener("cb-global-confirm", onOpen);
+    return () => window.removeEventListener("cb-global-confirm", onOpen);
+  }, []);
+
+  const close = (value) => {
+    reqRef.current?.resolve?.(value);
+    setReq(null);
+  };
+
+  useEffect(() => {
+    if (!req) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") close(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [req]);
+
+  if (!req) return null;
+  const danger = req.tone !== "primary";
+  return (
+    <div
+      className="fixed inset-0 z-[200] bg-slate-950/45 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={() => close(false)}
+      role="presentation"
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="cb-confirm-title"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-sm rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="p-5 flex gap-3.5">
+          <div
+            className={`w-11 h-11 rounded-xl grid place-items-center shrink-0 ${danger ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-600"}`}
+          >
+            {danger ? (
+              <Icons.Trash2 size={20} />
+            ) : (
+              <Icons.AlertTriangle size={20} />
+            )}
+          </div>
+          <div className="min-w-0">
+            <h3
+              id="cb-confirm-title"
+              className="font-bold text-base text-slate-900"
+            >
+              {req.title || "Are you sure?"}
+            </h3>
+            {req.message && (
+              <p className="text-sm text-slate-500 mt-1 break-words">
+                {req.message}
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+          <button
+            type="button"
+            autoFocus
+            onClick={() => close(false)}
+            className="h-10 px-4 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700"
+          >
+            {req.cancelText || "Cancel"}
+          </button>
+          <button
+            type="button"
+            onClick={() => close(true)}
+            className={`h-10 px-5 rounded-xl text-white text-sm font-bold ${danger ? "bg-red-600 hover:bg-red-700" : "bg-blue-600 hover:bg-blue-700"}`}
+          >
+            {req.confirmText || "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GlobalToastHost() {
   const [toast, setToast] = useState(null);
 
@@ -26012,8 +26239,12 @@ function AirStatusBadge({ status }) {
     </span>
   );
 }
-function AirStatusTimeline({ status, history = [] }) {
+function AirStatusTimeline({ status, history = [], refundReason = "" }) {
   const normalizedStatus = canonicalAirStatus(status);
+  const refundEntry = [...history]
+    .reverse()
+    .find((x) => canonicalAirStatus(x.status) === AIR_ORDER_TERMINAL);
+  const refundNote = (refundEntry?.note || refundReason || "").trim();
   const isRefunded = normalizedStatus === AIR_ORDER_TERMINAL;
   const isComplete = normalizedStatus === "Complete Order";
   const current = isRefunded
@@ -26073,20 +26304,23 @@ function AirStatusTimeline({ status, history = [] }) {
           <div className="w-8 h-8 rounded-full bg-red-500 text-white grid place-items-center shrink-0">
             <Icons.RotateCcw size={14} />
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="font-semibold text-sm text-red-700">Refund Order</p>
             <p className="text-xs text-slate-500 mt-0.5">
-              {history.find(
-                (x) => canonicalAirStatus(x.status) === AIR_ORDER_TERMINAL,
-              )?.created_at
-                ? formatDbTimestamp(
-                    history.find(
-                      (x) =>
-                        canonicalAirStatus(x.status) === AIR_ORDER_TERMINAL,
-                    ).created_at,
-                  )
+              {refundEntry?.created_at
+                ? formatDbTimestamp(refundEntry.created_at)
                 : "Refunded"}
             </p>
+            {refundNote && (
+              <div className="mt-2 rounded-xl bg-red-50 border border-red-100 px-3 py-2">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-red-400">
+                  Refund Reason
+                </p>
+                <p className="text-sm text-red-800 mt-0.5 whitespace-pre-wrap break-words">
+                  {refundNote}
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -26165,9 +26399,19 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
         airOrderLocalWrite([local, ...airOrderLocalRows()]);
         onSaved(local);
       }
+      emitCBToast(
+        "ok",
+        "AIR Order created",
+        `${oid} was created successfully.`,
+      );
       onClose();
     } catch (err) {
       setError(err.message || "Unable to create AIR Order.");
+      emitCBToast(
+        "err",
+        "Create failed",
+        err.message || "Unable to create AIR Order.",
+      );
     } finally {
       setBusy(false);
     }
@@ -26400,9 +26644,15 @@ function AirStatusUpdateModal({ open, row, onClose, onSaved }) {
         );
         onSaved(nextRow);
       }
+      emitCBToast("ok", "AIR Shipment updated", `${row.order_id} → ${next}`);
       onClose();
     } catch (err) {
       setError(err.message || "Unable to update AIR Shipment.");
+      emitCBToast(
+        "err",
+        "Update failed",
+        err.message || "Unable to update AIR Shipment.",
+      );
     } finally {
       setBusy(false);
     }
@@ -26546,9 +26796,15 @@ function AirRefundModal({ open, row, onClose, onSaved }) {
         );
         onSaved(nextRow);
       }
+      emitCBToast("ok", "AIR Order refunded", `${row.order_id} was refunded.`);
       onClose();
     } catch (err) {
       setError(err.message || "Unable to refund AIR Order.");
+      emitCBToast(
+        "err",
+        "Refund failed",
+        err.message || "Unable to refund AIR Order.",
+      );
     } finally {
       setBusy(false);
     }
@@ -26655,7 +26911,11 @@ function AirHistoryModal({ row, onClose }) {
           </button>
         </div>
         <div className="p-5">
-          <AirStatusTimeline status={row.status} history={history} />
+          <AirStatusTimeline
+            status={row.status}
+            history={history}
+            refundReason={row.refund_reason}
+          />
           <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
             {history.map((h, i) => (
               <div
@@ -26721,15 +26981,21 @@ function AirShipmentsPage() {
   });
   async function removeRow(row) {
     if (!canDelete) return;
-    if (!window.confirm(`Delete AIR Order ${row.order_id}?`)) return;
+    const ok = await confirmDialog({
+      title: "Delete AIR Order?",
+      message: `${row.order_id} will be permanently deleted. This action cannot be undone.`,
+      confirmText: "Delete",
+    });
+    if (!ok) return;
     if (supabase && !String(row.id).startsWith("air-local-")) {
       const { error } = await supabase
         .from("air_orders")
         .delete()
         .eq("id", row.id);
-      if (error) return window.alert(error.message);
+      if (error) return emitCBToast("err", "Delete failed", error.message);
     }
     airOrderLocalWrite(airOrderLocalRows().filter((x) => x.id !== row.id));
+    emitCBToast("ok", "AIR Order deleted", `${row.order_id} was deleted.`);
     await load();
   }
   return (
@@ -27012,15 +27278,21 @@ function AirShipmentDetailPage() {
   }, [id]);
   async function handleDelete() {
     if (!canDelete || !row) return;
-    if (!window.confirm(`Delete AIR Order ${row.order_id}?`)) return;
+    const ok = await confirmDialog({
+      title: "Delete AIR Order?",
+      message: `${row.order_id} will be permanently deleted. This action cannot be undone.`,
+      confirmText: "Delete",
+    });
+    if (!ok) return;
     if (supabase && !String(row.id).startsWith("air-local-")) {
       const { error } = await supabase
         .from("air_orders")
         .delete()
         .eq("id", row.id);
-      if (error) return window.alert(error.message);
+      if (error) return emitCBToast("err", "Delete failed", error.message);
     }
     airOrderLocalWrite(airOrderLocalRows().filter((x) => x.id !== row.id));
+    emitCBToast("ok", "AIR Order deleted", `${row.order_id} was deleted.`);
     navigate("/air-shipments");
   }
   if (loading) return <AirAdminDetailSkeleton />;
@@ -27103,7 +27375,11 @@ function AirShipmentDetailPage() {
       <div className="grid lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 cb-surface p-5">
           <h2 className="font-bold text-sm mb-5">AIR Shipment Timeline</h2>
-          <AirStatusTimeline status={row.status} history={history} />
+          <AirStatusTimeline
+            status={row.status}
+            history={history}
+            refundReason={row.refund_reason}
+          />
         </div>
         <div className="cb-surface p-5">
           <h2 className="font-bold text-sm mb-4">Order Information</h2>
@@ -31701,9 +31977,19 @@ function CustomerAddressCreateModal({ customer, warehouses, onClose, onDone }) {
           .update({ default_kh_branch: form.kh_branch_code })
           .eq("id", customer.id);
       }
+      emitCBToast(
+        "ok",
+        "Location created",
+        `${form.label || "Location"} was created successfully.`,
+      );
       onDone(data);
     } catch (err) {
       setError(err?.message || "មិនអាចបង្កើត Location បានទេ");
+      emitCBToast(
+        "err",
+        "Create failed",
+        err?.message || "មិនអាចបង្កើត Location បានទេ",
+      );
     } finally {
       setBusy(false);
     }
@@ -31943,9 +32229,19 @@ function CustomerAddressEditModal({
           .eq("id", customer.id);
         if (custErr) throw custErr;
       }
+      emitCBToast(
+        "ok",
+        "Location updated",
+        `${form.label || "Location"} was updated successfully.`,
+      );
       onDone(data);
     } catch (err) {
       setError(err?.message || "មិនអាច Update Location បានទេ");
+      emitCBToast(
+        "err",
+        "Update failed",
+        err?.message || "មិនអាច Update Location បានទេ",
+      );
     } finally {
       setBusy(false);
     }
@@ -32566,7 +32862,12 @@ function CustomerDetailPage() {
   async function deleteAddress(address) {
     if (!address?.id || !canDeleteAddresses) return;
     const label = address.label || "this location";
-    if (!window.confirm(`Delete ${label}?`)) return;
+    const ok = await confirmDialog({
+      title: "Delete location?",
+      message: `${label} will be permanently deleted.`,
+      confirmText: "Delete",
+    });
+    if (!ok) return;
     try {
       const wasDefault = !!address.is_default;
       const { error } = await supabase
@@ -35632,7 +35933,6 @@ function DeliveryPage() {
 function AdminApp() {
   return (
     <PackageTrackingProvider>
-      <GlobalToastHost />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Navigate to="/login" replace />} />
@@ -35739,6 +36039,8 @@ function App() {
   return (
     <>
       <style>{CB_DESIGN_CSS}</style>
+      <GlobalToastHost />
+      <GlobalConfirmHost />
       <Routes>
         <Route path="/customer/*" element={<CustomerApp />} />
         <Route path="/*" element={<AdminApp />} />
