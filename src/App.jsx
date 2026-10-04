@@ -21437,7 +21437,9 @@ const CustomerApp = (() => {
     const loadAirShips = async () => {
       if (!supabase) {
         setAirShips(
-          airOrderLocalRows().filter((r) => r.customer_id === me?.id),
+          airOrderLocalRows()
+            .filter((r) => r.customer_id === me?.id)
+            .map(normalizeAirRow),
         );
         return;
       }
@@ -21447,7 +21449,7 @@ const CustomerApp = (() => {
           "id,order_id,customer_id,customer,shop_name,product_name,tk,status,created_at,updated_at",
         )
         .order("created_at", { ascending: false });
-      if (!error) setAirShips(data || []);
+      if (!error) setAirShips((data || []).map(normalizeAirRow));
     };
 
     const loadShips = async () => {
@@ -21948,10 +21950,14 @@ const CustomerApp = (() => {
     if (loading)
       return (
         <div
-          className="min-h-screen grid place-items-center text-slate-400 text-sm"
+          className="min-h-screen bg-slate-50 max-w-md mx-auto p-4 space-y-5 animate-pulse"
+          aria-busy="true"
+          aria-label="Loading customer portal"
           style={FONT}
         >
-          Loading...
+          <Skeleton className="h-16 w-full rounded-b-3xl" />
+          <Skeleton className="h-11 w-40 rounded-full" />
+          <SkeletonCardList count={4} />
         </div>
       );
     if (!me) return <Navigate to={P("/login")} replace />;
@@ -22252,7 +22258,7 @@ const CustomerApp = (() => {
           ))}
           {!list.length && (
             <p className="text-center text-sm text-slate-400 py-10">
-              No shipments yetក្នុងស្ថានភាពនេះ
+              No shipments in this status.
             </p>
           )}
         </div>
@@ -22260,9 +22266,66 @@ const CustomerApp = (() => {
     );
   }
 
+  function CustomerAirSkeleton({ detail = false }) {
+    return (
+      <div
+        className="px-4 pt-4 space-y-4 animate-pulse"
+        aria-busy="true"
+        aria-label="Loading AIR shipment"
+      >
+        <div className="rounded-2xl bg-white border border-slate-100 p-4 flex items-center gap-3 shadow-sm">
+          <Skeleton className="w-11 h-11 rounded-xl" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-36" />
+            <Skeleton className="h-3 w-48" />
+          </div>
+          <Skeleton className="h-7 w-24 rounded-full" />
+        </div>
+        {detail ? (
+          <div className="rounded-2xl bg-white p-5 space-y-5 shadow-sm">
+            <Skeleton className="h-5 w-44" />
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex gap-3">
+                <Skeleton className="w-8 h-8 rounded-full shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-48" />
+                  <Skeleton className="h-3 w-28" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div
+                key={i}
+                className="rounded-2xl bg-white p-4 flex items-center gap-3 shadow-sm"
+              >
+                <Skeleton className="w-11 h-11 rounded-xl" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-3 w-52" />
+                  <Skeleton className="h-3 w-28" />
+                </div>
+                <Skeleton className="h-7 w-24 rounded-full" />
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    );
+  }
+
   // ---------- AIR Shipments (customer: separate menu) ----------
   function CustomerAirShipments() {
-    const { airShips } = useApp();
+    const { airShips, loading } = useApp();
+    if (loading)
+      return (
+        <>
+          <Top title="AIR Shipments" />
+          <CustomerAirSkeleton />
+        </>
+      );
     return (
       <>
         <Top title="AIR Shipments" />
@@ -22275,7 +22338,8 @@ const CustomerApp = (() => {
               <div>
                 <h2 className="font-bold text-slate-900">AIR Shipments</h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Separate AIR tracking from China / Container shipments.
+                  Independent AIR tracking with a dedicated Indonesia → Cambodia
+                  workflow.
                 </p>
               </div>
             </div>
@@ -22476,8 +22540,8 @@ const CustomerApp = (() => {
             .eq("order_id", orderId)
             .maybeSingle();
           if (alive && data) {
-            found = data;
-            setRow(data);
+            found = normalizeAirRow(data);
+            setRow(found);
           }
           if (found?.id) {
             const { data: h } = await supabase
@@ -22505,7 +22569,7 @@ const CustomerApp = (() => {
       return (
         <>
           <Top title="AIR Shipment" back />
-          <p className="text-center text-slate-400 py-16">Loading...</p>
+          <CustomerAirSkeleton detail />
         </>
       );
     if (!row)
@@ -25875,22 +25939,39 @@ function GlobalToastHost() {
 const AIR_ORDER_STATUS_FLOW = [
   "Order Processing",
   "In Transit",
-  "Inbound WH Indo",
-  "Outbound WH Indo",
-  "Inbound WH KH",
+  "Received at Indonesia Warehouse",
+  "Departed Indonesia Warehouse",
+  "Received at Cambodia Warehouse",
 ];
 const AIR_ORDER_TERMINAL = "Refund Order";
 const AIR_ORDER_LS_KEY = "cargo_bridge_air_orders_v1";
 
+// Backward compatibility for AIR rows created before the status labels were
+// standardized. The UI always displays the canonical English labels.
+const AIR_STATUS_ALIASES = {
+  "Inbound WH Indo": "Received at Indonesia Warehouse",
+  "Outbound WH Indo": "Departed Indonesia Warehouse",
+  "Inbound WH KH": "Received at Cambodia Warehouse",
+};
+function canonicalAirStatus(status) {
+  return AIR_STATUS_ALIASES[status] || status;
+}
+function normalizeAirRow(row) {
+  return row ? { ...row, status: canonicalAirStatus(row.status) } : row;
+}
 function airStatusIndex(status) {
-  return AIR_ORDER_STATUS_FLOW.indexOf(status);
+  return AIR_ORDER_STATUS_FLOW.indexOf(canonicalAirStatus(status));
 }
 function airStatusTone(status) {
+  status = canonicalAirStatus(status);
   if (status === "Order Processing") return "bg-slate-100 text-slate-700";
   if (status === "In Transit") return "bg-blue-50 text-blue-700";
-  if (status === "Inbound WH Indo") return "bg-violet-50 text-violet-700";
-  if (status === "Outbound WH Indo") return "bg-amber-50 text-amber-700";
-  if (status === "Inbound WH KH") return "bg-emerald-50 text-emerald-700";
+  if (status === "Received at Indonesia Warehouse")
+    return "bg-violet-50 text-violet-700";
+  if (status === "Departed Indonesia Warehouse")
+    return "bg-amber-50 text-amber-700";
+  if (status === "Received at Cambodia Warehouse")
+    return "bg-emerald-50 text-emerald-700";
   if (status === AIR_ORDER_TERMINAL) return "bg-red-50 text-red-700";
   return "bg-slate-100 text-slate-600";
 }
@@ -25912,39 +25993,52 @@ function airOrderCustomerLabel(c) {
   return c ? `${c.customer_code || c.id} · ${c.name || ""}` : "";
 }
 function AirStatusBadge({ status }) {
+  const label = canonicalAirStatus(status);
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold whitespace-nowrap ${airStatusTone(status)}`}
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold whitespace-nowrap ${airStatusTone(label)}`}
     >
-      {status}
+      {label}
     </span>
   );
 }
 function AirStatusTimeline({ status, history = [] }) {
-  const current = status === AIR_ORDER_TERMINAL ? -1 : airStatusIndex(status);
+  const normalizedStatus = canonicalAirStatus(status);
+  const current =
+    normalizedStatus === AIR_ORDER_TERMINAL
+      ? -1
+      : airStatusIndex(normalizedStatus);
   return (
-    <div className="space-y-4">
+    <div className="space-y-1" role="list" aria-label="AIR shipment tracking">
       {AIR_ORDER_STATUS_FLOW.map((label, i) => {
-        const done = current >= i,
-          active = current === i;
-        const h = [...history].reverse().find((x) => x.status === label);
+        const done = current > i;
+        const active = current === i;
+        const h = [...history]
+          .reverse()
+          .find((x) => canonicalAirStatus(x.status) === label);
         return (
-          <div key={label} className="flex gap-3">
+          <div key={label} className="flex gap-3.5" role="listitem">
             <div className="flex flex-col items-center">
               <span
-                className={`w-7 h-7 rounded-full grid place-items-center shrink-0 ${done ? "bg-emerald-500 text-white" : active ? "bg-white border-[6px] border-blue-600" : "bg-slate-200"}`}
+                className={`relative w-8 h-8 rounded-full grid place-items-center shrink-0 transition-all duration-500 ${done ? "bg-emerald-500 text-white" : active ? "bg-blue-600 text-white shadow-[0_0_0_6px_rgba(37,99,235,.10)] animate-pulse" : "bg-slate-100 border border-slate-200 text-slate-300"}`}
               >
-                {done && <Icons.Check size={15} strokeWidth={3} />}
+                {done ? (
+                  <Icons.Check size={15} strokeWidth={3} />
+                ) : active ? (
+                  <Icons.Plane size={15} strokeWidth={2.5} />
+                ) : (
+                  <span className="w-2 h-2 rounded-full bg-slate-300" />
+                )}
               </span>
               {i < AIR_ORDER_STATUS_FLOW.length - 1 && (
                 <span
-                  className={`w-0.5 flex-1 min-h-[28px] ${done && current > i ? "bg-emerald-400" : "bg-slate-200"}`}
+                  className={`w-0.5 flex-1 min-h-[42px] transition-colors duration-500 ${done ? "bg-emerald-400" : "bg-slate-200"}`}
                 />
               )}
             </div>
-            <div className="pb-2">
+            <div className="pb-5 pt-0.5 min-w-0">
               <p
-                className={`font-semibold text-sm ${active ? "text-blue-700" : done ? "text-slate-900" : "text-slate-400"}`}
+                className={`font-semibold text-[15px] leading-6 ${active ? "text-blue-700" : done ? "text-slate-900" : "text-slate-400"}`}
               >
                 {label}
               </p>
@@ -25953,24 +26047,30 @@ function AirStatusTimeline({ status, history = [] }) {
                   ? formatDbTimestamp(h.created_at)
                   : done
                     ? "Completed"
-                    : "Pending"}
+                    : active
+                      ? "Current status"
+                      : "Pending"}
               </p>
             </div>
           </div>
         );
       })}
-      {status === AIR_ORDER_TERMINAL && (
-        <div className="flex gap-3">
-          <div className="w-7 h-7 rounded-full bg-red-500 text-white grid place-items-center shrink-0">
+      {normalizedStatus === AIR_ORDER_TERMINAL && (
+        <div className="flex gap-3.5" role="listitem">
+          <div className="w-8 h-8 rounded-full bg-red-500 text-white grid place-items-center shrink-0">
             <Icons.RotateCcw size={14} />
           </div>
           <div>
             <p className="font-semibold text-sm text-red-700">Refund Order</p>
             <p className="text-xs text-slate-500 mt-0.5">
-              {history.find((x) => x.status === AIR_ORDER_TERMINAL)?.created_at
+              {history.find(
+                (x) => canonicalAirStatus(x.status) === AIR_ORDER_TERMINAL,
+              )?.created_at
                 ? formatDbTimestamp(
-                    history.find((x) => x.status === AIR_ORDER_TERMINAL)
-                      .created_at,
+                    history.find(
+                      (x) =>
+                        canonicalAirStatus(x.status) === AIR_ORDER_TERMINAL,
+                    ).created_at,
                   )
                 : "Refunded"}
             </p>
@@ -26209,8 +26309,8 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
             />
           </div>
           <div className="rounded-xl bg-blue-50 px-3.5 py-3 text-xs text-blue-700">
-            <b>Initial Status:</b> Order Processing. China / Container status is
-            not used.
+            <b>Initial Status:</b> Order Processing. This AIR shipment uses its
+            own tracking workflow.
           </div>
         </div>
         <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
@@ -26581,7 +26681,7 @@ function AirShipmentsPage() {
   const [historyRow, setHistoryRow] = useState(null);
   const load = React.useCallback(async () => {
     if (!supabase) {
-      setRows(airOrderLocalRows());
+      setRows(airOrderLocalRows().map(normalizeAirRow));
       setLoading(false);
       return;
     }
@@ -26590,7 +26690,7 @@ function AirShipmentsPage() {
       .from("air_orders")
       .select("*")
       .order("created_at", { ascending: false });
-    setRows(data || []);
+    setRows((data || []).map(normalizeAirRow));
     setLoading(false);
   }, []);
   useEffect(() => {
@@ -26633,7 +26733,7 @@ function AirShipmentsPage() {
           </h1>
           <p className="text-sm text-ink-600/55 mt-1">
             Independent AIR workflow: Order Processing → In Transit → Indonesia
-            WH → Cambodia WH.
+            Warehouse → Cambodia Warehouse.
           </p>
         </div>
         {canCreate && (
@@ -26651,26 +26751,34 @@ function AirShipmentsPage() {
           ["Total", rows.length, "text-slate-900"],
           [
             "Processing",
-            rows.filter((r) => r.status === "Order Processing").length,
+            rows.filter(
+              (r) => canonicalAirStatus(r.status) === "Order Processing",
+            ).length,
             "text-slate-700",
           ],
           [
             "In Transit",
-            rows.filter((r) => r.status === "In Transit").length,
+            rows.filter((r) => canonicalAirStatus(r.status) === "In Transit")
+              .length,
             "text-blue-700",
           ],
           [
             "In Indo WH",
-            rows.filter(
-              (r) =>
-                r.status === "Inbound WH Indo" ||
-                r.status === "Outbound WH Indo",
+            rows.filter((r) =>
+              [
+                "Received at Indonesia Warehouse",
+                "Departed Indonesia Warehouse",
+              ].includes(canonicalAirStatus(r.status)),
             ).length,
             "text-violet-700",
           ],
           [
-            "Inbound KH",
-            rows.filter((r) => r.status === "Inbound WH KH").length,
+            "Received in KH",
+            rows.filter(
+              (r) =>
+                canonicalAirStatus(r.status) ===
+                "Received at Cambodia Warehouse",
+            ).length,
             "text-emerald-700",
           ],
         ].map(([l, n, c]) => (
@@ -26726,14 +26834,19 @@ function AirShipmentsPage() {
             </thead>
             <tbody className="divide-y divide-mist-100">
               {loading ? (
-                <tr>
-                  <td
-                    colSpan={7}
-                    className="px-4 py-10 text-center text-slate-400"
-                  >
-                    Loading AIR shipments…
-                  </td>
-                </tr>
+                Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={`air-sk-${i}`} aria-hidden="true">
+                    {Array.from({ length: 7 }).map((_, j) => (
+                      <td key={j} className="px-4 py-3.5">
+                        <Skeleton
+                          className="h-3.5"
+                          style={{ width: j === 6 ? 90 : j === 0 ? 120 : 72 }}
+                          delay={i * 70}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))
               ) : !filtered.length ? (
                 <tr>
                   <td
@@ -26780,15 +26893,17 @@ function AirShipmentsPage() {
                             {airNextStatus(r.status)}
                           </button>
                         )}
-                        {canRefund && r.status === "Order Processing" && (
-                          <button
-                            type="button"
-                            onClick={() => setRefundRow(r)}
-                            className="h-8 px-2.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-bold"
-                          >
-                            Refund
-                          </button>
-                        )}
+                        {canRefund &&
+                          canonicalAirStatus(r.status) ===
+                            "Order Processing" && (
+                            <button
+                              type="button"
+                              onClick={() => setRefundRow(r)}
+                              className="h-8 px-2.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-bold"
+                            >
+                              Refund
+                            </button>
+                          )}
                         <button
                           type="button"
                           onClick={() => setHistoryRow(r)}
@@ -26850,6 +26965,51 @@ function AirShipmentsPage() {
   );
 }
 
+function AirAdminDetailSkeleton() {
+  return (
+    <div
+      className="space-y-5 animate-pulse"
+      aria-busy="true"
+      aria-label="Loading AIR shipment"
+    >
+      <Skeleton className="h-4 w-36" />
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Skeleton className="w-11 h-11 rounded-xl" />
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-44" />
+            <Skeleton className="h-3 w-56" />
+          </div>
+        </div>
+        <Skeleton className="h-9 w-28 rounded-xl" />
+      </div>
+      <div className="grid lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2 cb-surface p-5 space-y-5">
+          <Skeleton className="h-4 w-36" />
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="flex gap-3">
+              <Skeleton className="w-8 h-8 rounded-full" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-52" />
+                <Skeleton className="h-3 w-28" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="cb-surface p-5 space-y-4">
+          <Skeleton className="h-4 w-32" />
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="space-y-2">
+              <Skeleton className="h-2.5 w-20" />
+              <Skeleton className="h-3.5 w-full" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AirShipmentDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -26890,7 +27050,7 @@ function AirShipmentDetailPage() {
         .eq("order_id", id)
         .maybeSingle();
       if (!alive) return;
-      setRow(data || null);
+      setRow(normalizeAirRow(data || null));
       if (data?.id) {
         const { data: h } = await supabase
           .from("air_order_history")
@@ -26905,12 +27065,7 @@ function AirShipmentDetailPage() {
       alive = false;
     };
   }, [id]);
-  if (loading)
-    return (
-      <div className="py-12 text-center text-slate-400">
-        Loading AIR Shipment…
-      </div>
-    );
+  if (loading) return <AirAdminDetailSkeleton />;
   if (!row)
     return (
       <div className="py-12 text-center text-slate-400">
@@ -26949,14 +27104,15 @@ function AirShipmentDetailPage() {
               {airNextStatus(row.status)}
             </button>
           )}
-          {canRefund && row.status === "Order Processing" && (
-            <button
-              onClick={() => setRefundOpen(true)}
-              className="h-10 px-3 rounded-xl bg-red-600 text-white text-sm font-bold"
-            >
-              Refund Order
-            </button>
-          )}
+          {canRefund &&
+            canonicalAirStatus(row.status) === "Order Processing" && (
+              <button
+                onClick={() => setRefundOpen(true)}
+                className="h-10 px-3 rounded-xl bg-red-600 text-white text-sm font-bold"
+              >
+                Refund Order
+              </button>
+            )}
         </div>
       </div>
       <div className="grid lg:grid-cols-3 gap-5">
