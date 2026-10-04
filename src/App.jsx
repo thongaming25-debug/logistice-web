@@ -783,6 +783,7 @@ const NAV_SECTIONS = [
       { label: "Outbound Origin", icon: "LogOut", path: "/outbound-origin" },
       { label: "Containers", icon: "Container", path: "/containers" },
       { label: "Shipment Lookup", icon: "Waypoints", path: "/shipment-lookup" },
+      { label: "AIR Shipments", icon: "Plane", path: "/air-shipments" },
     ],
   },
   {
@@ -1009,6 +1010,18 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
+    key: "air_order",
+    label: "AIR Shipments",
+    perms: [
+      ["air_order.view", "View AIR Shipment"],
+      ["air_order.create", "Create AIR Shipment"],
+      ["air_order.edit", "Edit AIR Shipment"],
+      ["air_order.delete", "Delete AIR Shipment"],
+      ["air_order.process", "Advance AIR Shipment Status"],
+      ["air_order.refund", "Refund AIR Order"],
+    ],
+  },
+  {
     key: "warehouse",
     label: "Warehouses",
     perms: [
@@ -1071,6 +1084,7 @@ const PATH_VIEW = {
   "/customer-addresses": "customer_address.view",
   "/customer-transfer": "customer_transfer.view",
   "/orders": "order.view",
+  "/air-shipments": "air_order.view",
   "/warehouses": "warehouse.view",
   "/locations": "location.view",
   "/warehouse-operations": "warehouse_ops.view",
@@ -1120,6 +1134,11 @@ const PATH_ACTIONS = {
   "/warehouse-operations": crudKeys("warehouse_ops"),
   "/users": crudKeys("user"),
   "/status-master": crudKeys("status_master"),
+  "/air-shipments": {
+    create: "air_order.create",
+    edit: "air_order.edit",
+    delete: "air_order.delete",
+  },
 };
 
 // ---- Seed roles ---------------------------------------------------------
@@ -1182,6 +1201,11 @@ function seedRoles() {
         "customer.edit",
         "order.edit",
         "order.change_branch",
+        "air_order.view",
+        "air_order.create",
+        "air_order.edit",
+        "air_order.process",
+        "air_order.refund",
       ],
       { description: "Leads a team inside a department." },
     ),
@@ -1191,6 +1215,8 @@ function seedRoles() {
       "WAREHOUSE",
       [
         "dashboard.view",
+        "air_order.view",
+        "air_order.process",
         "tk.view",
         "tk.create",
         "tk.edit",
@@ -1220,6 +1246,8 @@ function seedRoles() {
       "WAREHOUSE",
       [
         "dashboard.view",
+        "air_order.view",
+        "air_order.process",
         "tk.view",
         "tk.scan",
         "inbound.view",
@@ -1303,6 +1331,11 @@ function seedRoles() {
         "customer_transfer.view",
         "exception.view",
         "order.change_branch",
+        "air_order.view",
+        "air_order.create",
+        "air_order.edit",
+        "air_order.process",
+        "air_order.refund",
       ],
       { legacy: true, description: "Existing role (kept as-is)." },
     ),
@@ -21376,6 +21409,7 @@ const CustomerApp = (() => {
     const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
     const [me, setMe] = useState(null);
     const [ships, setShips] = useState([]);
+    const [airShips, setAirShips] = useState([]);
     const [addrs, setAddrs] = useState([]);
     const [branches, setBranches] = useState([]); // Active Cambodia receiving branches
     const [branchErr, setBranchErr] = useState("");
@@ -21400,6 +21434,22 @@ const CustomerApp = (() => {
       setMe(data);
       return data;
     };
+    const loadAirShips = async () => {
+      if (!supabase) {
+        setAirShips(
+          airOrderLocalRows().filter((r) => r.customer_id === me?.id),
+        );
+        return;
+      }
+      const { data, error } = await supabase
+        .from("air_orders")
+        .select(
+          "id,order_id,customer_id,customer,shop_name,product_name,tk,status,created_at,updated_at",
+        )
+        .order("created_at", { ascending: false });
+      if (!error) setAirShips(data || []);
+    };
+
     const loadShips = async () => {
       const [{ data: pkgs }, { data: ords }, { data: feeRows }] =
         await Promise.all([
@@ -21446,7 +21496,8 @@ const CustomerApp = (() => {
         ),
       });
     };
-    const refreshMoney = () => Promise.all([loadShips(), loadWallet()]);
+    const refreshMoney = () =>
+      Promise.all([loadShips(), loadAirShips(), loadWallet()]);
     const payShipping = async (tk) => {
       const { error } = await supabase.rpc("pay_shipping_fee", {
         p_tk: tk,
@@ -21524,6 +21575,7 @@ const CustomerApp = (() => {
         if (m)
           await Promise.all([
             loadShips(),
+            loadAirShips(),
             loadWallet(),
             loadAddrs(),
             loadBranches(),
@@ -21626,6 +21678,7 @@ const CustomerApp = (() => {
       signup,
       logout,
       ships,
+      airShips,
       wallet,
       refreshMoney,
       payShipping,
@@ -21640,6 +21693,13 @@ const CustomerApp = (() => {
   }
 
   // ---------- UI atoms ----------
+  const AirCustomerBadge = ({ status }) => (
+    <span
+      className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${airStatusTone(status)}`}
+    >
+      {status}
+    </span>
+  );
   const Badge = ({ n, fee }) => {
     const owes = n === 4 && fee?.state === "due" && fee.total > 0;
     const [l, c] = owes
@@ -21898,6 +21958,7 @@ const CustomerApp = (() => {
     const tabs = [
       [P(), Home, "Home"],
       [P("/shipments"), Package, "Shipments"],
+      [P("/air-shipments"), Icons.Plane, "AIR"],
       [P("/addresses"), MapPin, "Address"],
       [P("/profile"), User, "Profile"],
     ];
@@ -21915,7 +21976,7 @@ const CustomerApp = (() => {
           className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-100 z-40"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
         >
-          <div className="max-w-md mx-auto grid grid-cols-4">
+          <div className="max-w-md mx-auto grid grid-cols-5">
             {tabs.map(([to, I, l]) => (
               <NavLink
                 key={to}
@@ -21936,6 +21997,36 @@ const CustomerApp = (() => {
   }
 
   // ---------- Shipment row ----------
+  function AirRow({ s }) {
+    const nav = useNavigate();
+    return (
+      <Card
+        onClick={() =>
+          nav(P("/air-shipments/" + encodeURIComponent(s.order_id)))
+        }
+        className="p-3.5 flex items-center gap-3 cursor-pointer active:bg-slate-50"
+      >
+        <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 grid place-items-center shrink-0">
+          <Icons.Plane size={20} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <b className="text-[15px] truncate">{s.order_id}</b>
+            <AirCustomerBadge status={s.status} />
+          </div>
+          <p className="text-[13px] text-slate-500 truncate">
+            AIR{s.tk ? ` · TK ${s.tk}` : ""} ·{" "}
+            {s.shop_name || s.product_name || "Shipment"}
+          </p>
+          <p className="text-xs text-slate-400">
+            Created: {fmtDate(s.created_at)}
+          </p>
+        </div>
+        <ChevronRight size={18} className="text-slate-300" />
+      </Card>
+    );
+  }
+
   function Row({ s }) {
     const nav = useNavigate();
     return (
@@ -22130,7 +22221,7 @@ const CustomerApp = (() => {
 
   // ---------- Shipments list ----------
   function Shipments() {
-    const { ships } = useApp();
+    const { ships, airShips } = useApp();
     const [t, setT] = useState("All");
     const tabs = {
       All: () => true,
@@ -22163,6 +22254,38 @@ const CustomerApp = (() => {
             <p className="text-center text-sm text-slate-400 py-10">
               No shipments yetក្នុងស្ថានភាពនេះ
             </p>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  // ---------- AIR Shipments (customer: separate menu) ----------
+  function CustomerAirShipments() {
+    const { airShips } = useApp();
+    return (
+      <>
+        <Top title="AIR Shipments" />
+        <div className="px-4 pt-4 space-y-3">
+          <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-white text-blue-600 grid place-items-center shrink-0">
+                <Icons.Plane size={21} />
+              </div>
+              <div>
+                <h2 className="font-bold text-slate-900">AIR Shipments</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Separate AIR tracking from China / Container shipments.
+                </p>
+              </div>
+            </div>
+          </div>
+          {airShips.length ? (
+            airShips.map((s) => <AirRow key={s.id || s.order_id} s={s} />)
+          ) : (
+            <div className="text-center py-16 text-sm text-slate-400">
+              No AIR shipments yet.
+            </div>
           )}
         </div>
       </>
@@ -22327,6 +22450,118 @@ const CustomerApp = (() => {
           <p className="flex gap-2 text-xs text-slate-500 bg-blue-50 rounded-xl p-3">
             <Info size={16} className="shrink-0 text-blue-500" />
             Detailed staff and internal information is not visible to customers.
+          </p>
+        </div>
+      </>
+    );
+  }
+
+  // ---------- AIR Shipment Detail ----------
+  function AirDetail() {
+    const { orderId } = useParams();
+    const { airShips } = useApp();
+    const [row, setRow] = useState(
+      () => airShips.find((x) => x.order_id === orderId) || null,
+    );
+    const [history, setHistory] = useState([]);
+    const [loadingAir, setLoadingAir] = useState(true);
+    useEffect(() => {
+      let alive = true;
+      (async () => {
+        let found = row || null;
+        if (supabase) {
+          const { data } = await supabase
+            .from("air_orders")
+            .select("*")
+            .eq("order_id", orderId)
+            .maybeSingle();
+          if (alive && data) {
+            found = data;
+            setRow(data);
+          }
+          if (found?.id) {
+            const { data: h } = await supabase
+              .from("air_order_history")
+              .select("*")
+              .eq("air_order_id", found.id)
+              .order("created_at", { ascending: true });
+            if (alive) setHistory(h || []);
+          }
+        } else if (found)
+          setHistory([
+            {
+              status: found.status,
+              created_at: found.updated_at,
+              created_by: found.updated_by,
+            },
+          ]);
+        if (alive) setLoadingAir(false);
+      })();
+      return () => {
+        alive = false;
+      };
+    }, [orderId]);
+    if (loadingAir)
+      return (
+        <>
+          <Top title="AIR Shipment" back />
+          <p className="text-center text-slate-400 py-16">Loading...</p>
+        </>
+      );
+    if (!row)
+      return (
+        <>
+          <Top title="AIR Shipment" back />
+          <p className="text-center text-slate-400 py-16">
+            AIR shipment not found
+          </p>
+        </>
+      );
+    return (
+      <>
+        <Top title="AIR Shipment" back />
+        <div className="px-4 pt-4 space-y-4">
+          <Card className="p-4 flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 grid place-items-center">
+              <Icons.Plane size={20} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <b>{row.order_id}</b>
+              <p className="text-[13px] text-slate-500">
+                AIR · {row.tk ? `TK ${row.tk}` : "TK pending"}
+              </p>
+            </div>
+            <AirCustomerBadge status={row.status} />
+          </Card>
+          <Card className="p-5">
+            <h2 className="font-bold mb-5">Shipment AIR Tracking</h2>
+            <AirStatusTimeline status={row.status} history={history} />
+          </Card>
+          <Card className="p-5">
+            <h2 className="font-bold mb-4">Order Information</h2>
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-500">Shop Order ID</span>
+                <b>{row.order_id}</b>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-500">TK</span>
+                <b>{row.tk || "Pending"}</b>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-500">Shop</span>
+                <b>{row.shop_name || "—"}</b>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-slate-500">Product</span>
+                <b className="text-right">{row.product_name || "—"}</b>
+              </div>
+            </div>
+          </Card>
+          <p className="flex gap-2 text-xs text-slate-500 bg-blue-50 rounded-xl p-3">
+            <Info size={16} className="shrink-0 text-blue-500" /> AIR tracking
+            uses a separate status flow and does not expose staff/scanner
+            information.
           </p>
         </div>
       </>
@@ -23002,6 +23237,8 @@ const CustomerApp = (() => {
             <Route index element={<HomePage />} />
             <Route path="shipments" element={<Shipments />} />
             <Route path="shipments/:tk" element={<Detail />} />
+            <Route path="air-shipments" element={<CustomerAirShipments />} />
+            <Route path="air-shipments/:orderId" element={<AirDetail />} />
             <Route path="warehouse" element={<ChinaWH />} />
             <Route path="wallet" element={<WalletPage />} />
             <Route path="addresses" element={<Addresses />} />
@@ -25627,6 +25864,1150 @@ function GlobalToastHost() {
         </div>
       </div>
       <style>{`@keyframes cb-global-toast-in { from { opacity: 0; transform: translate3d(18px,-8px,0) scale(.98); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } } @keyframes cb-global-toast-progress { from { width: 100%; } to { width: 0%; } } @media (prefers-reduced-motion: reduce) { [role="status"], [role="alert"] { animation: none !important; } }`}</style>
+    </div>
+  );
+}
+
+// ============================================================
+// AIR SHIPMENT MODULE
+// Separate lifecycle from the China / Sea / Land workflow.
+// ============================================================
+const AIR_ORDER_STATUS_FLOW = [
+  "Order Processing",
+  "In Transit",
+  "Inbound WH Indo",
+  "Outbound WH Indo",
+  "Inbound WH KH",
+];
+const AIR_ORDER_TERMINAL = "Refund Order";
+const AIR_ORDER_LS_KEY = "cargo_bridge_air_orders_v1";
+
+function airStatusIndex(status) {
+  return AIR_ORDER_STATUS_FLOW.indexOf(status);
+}
+function airStatusTone(status) {
+  if (status === "Order Processing") return "bg-slate-100 text-slate-700";
+  if (status === "In Transit") return "bg-blue-50 text-blue-700";
+  if (status === "Inbound WH Indo") return "bg-violet-50 text-violet-700";
+  if (status === "Outbound WH Indo") return "bg-amber-50 text-amber-700";
+  if (status === "Inbound WH KH") return "bg-emerald-50 text-emerald-700";
+  if (status === AIR_ORDER_TERMINAL) return "bg-red-50 text-red-700";
+  return "bg-slate-100 text-slate-600";
+}
+function airStatusCanAdvance(status) {
+  const i = airStatusIndex(status);
+  return i >= 0 && i < AIR_ORDER_STATUS_FLOW.length - 1;
+}
+function airNextStatus(status) {
+  const i = airStatusIndex(status);
+  return i >= 0 ? AIR_ORDER_STATUS_FLOW[i + 1] || null : null;
+}
+function airOrderLocalRows() {
+  return lsRead(AIR_ORDER_LS_KEY, []);
+}
+function airOrderLocalWrite(rows) {
+  lsWrite(AIR_ORDER_LS_KEY, rows);
+}
+function airOrderCustomerLabel(c) {
+  return c ? `${c.customer_code || c.id} · ${c.name || ""}` : "";
+}
+function AirStatusBadge({ status }) {
+  return (
+    <span
+      className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold whitespace-nowrap ${airStatusTone(status)}`}
+    >
+      {status}
+    </span>
+  );
+}
+function AirStatusTimeline({ status, history = [] }) {
+  const current = status === AIR_ORDER_TERMINAL ? -1 : airStatusIndex(status);
+  return (
+    <div className="space-y-4">
+      {AIR_ORDER_STATUS_FLOW.map((label, i) => {
+        const done = current >= i,
+          active = current === i;
+        const h = [...history].reverse().find((x) => x.status === label);
+        return (
+          <div key={label} className="flex gap-3">
+            <div className="flex flex-col items-center">
+              <span
+                className={`w-7 h-7 rounded-full grid place-items-center shrink-0 ${done ? "bg-emerald-500 text-white" : active ? "bg-white border-[6px] border-blue-600" : "bg-slate-200"}`}
+              >
+                {done && <Icons.Check size={15} strokeWidth={3} />}
+              </span>
+              {i < AIR_ORDER_STATUS_FLOW.length - 1 && (
+                <span
+                  className={`w-0.5 flex-1 min-h-[28px] ${done && current > i ? "bg-emerald-400" : "bg-slate-200"}`}
+                />
+              )}
+            </div>
+            <div className="pb-2">
+              <p
+                className={`font-semibold text-sm ${active ? "text-blue-700" : done ? "text-slate-900" : "text-slate-400"}`}
+              >
+                {label}
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {h?.created_at
+                  ? formatDbTimestamp(h.created_at)
+                  : done
+                    ? "Completed"
+                    : "Pending"}
+              </p>
+            </div>
+          </div>
+        );
+      })}
+      {status === AIR_ORDER_TERMINAL && (
+        <div className="flex gap-3">
+          <div className="w-7 h-7 rounded-full bg-red-500 text-white grid place-items-center shrink-0">
+            <Icons.RotateCcw size={14} />
+          </div>
+          <div>
+            <p className="font-semibold text-sm text-red-700">Refund Order</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {history.find((x) => x.status === AIR_ORDER_TERMINAL)?.created_at
+                ? formatDbTimestamp(
+                    history.find((x) => x.status === AIR_ORDER_TERMINAL)
+                      .created_at,
+                  )
+                : "Refunded"}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AirOrderCreateModal({ open, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [query, setQuery] = useState("");
+  const [customer, setCustomer] = useState(null);
+  const [orderId, setOrderId] = useState("");
+  const [shop, setShop] = useState("");
+  const [product, setProduct] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // AIR must search the same live customers source used by the Customers / Order modules.
+  // The previous implementation used the UID-only lookup, so typing a customer name
+  // (or even a partial name) incorrectly returned "Customer not found".
+  const { results: customerResults, loading: customerLoading } =
+    useCustomerSearch(query);
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setCustomer(null);
+      setOrderId("");
+      setShop("");
+      setProduct("");
+      setNote("");
+      setBusy(false);
+      setError("");
+    }
+  }, [open]);
+  if (!open) return null;
+  async function submit(e) {
+    e.preventDefault();
+    const oid = orderId.trim();
+    if (!customer) return setError("Please select a Customer.");
+    if (!oid) return setError("Shop Order ID is required.");
+    setBusy(true);
+    setError("");
+    try {
+      const now = new Date().toISOString(),
+        by = user?.name || user?.email || "Admin";
+      const row = {
+        order_id: oid,
+        customer_id: customer.id,
+        customer: airOrderCustomerLabel(customer),
+        shop_name: shop.trim() || null,
+        product_name: product.trim() || null,
+        tk: null,
+        status: "Order Processing",
+        note: note.trim() || null,
+        created_by: by,
+        updated_by: by,
+        created_at: now,
+        updated_at: now,
+      };
+      if (supabase) {
+        const { data, error } = await supabase
+          .from("air_orders")
+          .insert(row)
+          .select("*")
+          .single();
+        if (error) throw error;
+        await supabase
+          .from("air_order_history")
+          .insert({
+            air_order_id: data.id,
+            status: "Order Processing",
+            created_by: by,
+            note: "AIR Order created",
+          });
+        onSaved(data);
+      } else {
+        const local = { id: `air-local-${Date.now()}`, ...row };
+        airOrderLocalWrite([local, ...airOrderLocalRows()]);
+        onSaved(local);
+      }
+      onClose();
+    } catch (err) {
+      setError(err.message || "Unable to create AIR Order.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 grid place-items-center">
+                <Icons.Plane size={18} />
+              </span>
+              <h3 className="font-bold text-lg">Create AIR Shipment</h3>
+            </div>
+            <p className="text-xs text-slate-500 mt-1">
+              Starts at Order Processing.
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <div>
+            <label className={LABEL_CLS}>Customer *</label>
+            {customer ? (
+              <div className="flex items-center justify-between rounded-xl border border-blue-200 bg-blue-50/60 px-3 py-2.5 text-sm">
+                <span className="min-w-0">
+                  <b>{customer.customer_code}</b>
+                  <span className="text-slate-500"> · {customer.name}</span>
+                  {customer.phone && (
+                    <span className="block text-xs text-slate-400 mt-0.5">
+                      {customer.phone}
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomer(null);
+                    setQuery("");
+                  }}
+                  className="text-slate-400 hover:text-red-500"
+                >
+                  <Icons.X size={15} />
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <input
+                  className={INPUT_CLS}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onFocus={() => {}}
+                  placeholder="Search Customer ID, name or phone…"
+                  autoComplete="off"
+                />
+                {query.trim() && (
+                  <div className="absolute z-30 mt-1 w-full rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+                    {customerLoading ? (
+                      <div className="px-3 py-3 text-xs text-slate-400">
+                        Searching customers…
+                      </div>
+                    ) : customerResults.length > 0 ? (
+                      customerResults.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            setCustomer(c);
+                            setQuery("");
+                            setError("");
+                          }}
+                          className="w-full text-left px-3 py-3 hover:bg-slate-50 border-b last:border-b-0 border-slate-100"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <b className="text-sm text-slate-900">
+                              {c.customer_code}
+                            </b>
+                            {c.phone && (
+                              <span className="text-xs text-slate-400">
+                                {c.phone}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-sm text-slate-600 truncate mt-0.5">
+                            {c.name || "Unnamed customer"}
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-3 py-3 text-xs text-slate-400">
+                        Customer not found.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className={LABEL_CLS}>Shop Order ID *</label>
+              <input
+                className={INPUT_CLS}
+                value={orderId}
+                onChange={(e) => setOrderId(e.target.value)}
+                placeholder="Order ID from shop"
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLS}>Shop / Platform</label>
+              <input
+                className={INPUT_CLS}
+                value={shop}
+                onChange={(e) => setShop(e.target.value)}
+                placeholder="e.g. Tokopedia"
+              />
+            </div>
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Product</label>
+            <input
+              className={INPUT_CLS}
+              value={product}
+              onChange={(e) => setProduct(e.target.value)}
+              placeholder="Product / description"
+            />
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Note</label>
+            <textarea
+              className={`${INPUT_CLS} min-h-20 py-2`}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Optional note"
+            />
+          </div>
+          <div className="rounded-xl bg-blue-50 px-3.5 py-3 text-xs text-blue-700">
+            <b>Initial Status:</b> Order Processing. China / Container status is
+            not used.
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={busy}
+            className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {busy ? "Creating…" : "Create AIR Order"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AirStatusUpdateModal({ open, row, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [tk, setTk] = useState("");
+  const [note, setNote] = useState("");
+  const [next, setNext] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open && row) {
+      setNext(airNextStatus(row.status) || "");
+      setTk(row.tk || "");
+      setNote("");
+      setError("");
+      setBusy(false);
+    }
+  }, [open, row]);
+  if (!open || !row) return null;
+  const needsTk = next === "In Transit";
+  async function submit(e) {
+    e.preventDefault();
+    if (!next) return setError("This AIR Order has no next status.");
+    if (needsTk && !tk.trim())
+      return setError("TK is required before In Transit.");
+    setBusy(true);
+    setError("");
+    try {
+      const by = user?.name || user?.email || "Admin",
+        patch = {
+          status: next,
+          tk: tk.trim() || row.tk || null,
+          updated_at: new Date().toISOString(),
+          updated_by: by,
+        };
+      if (supabase && !String(row.id).startsWith("air-local-")) {
+        const { data, error } = await supabase
+          .from("air_orders")
+          .update(patch)
+          .eq("id", row.id)
+          .select("*")
+          .single();
+        if (error) throw error;
+        await supabase
+          .from("air_order_history")
+          .insert({
+            air_order_id: row.id,
+            status: next,
+            tk: patch.tk,
+            created_by: by,
+            note: note.trim() || null,
+          });
+        onSaved(data);
+      } else {
+        const nextRow = { ...row, ...patch };
+        airOrderLocalWrite(
+          airOrderLocalRows().map((x) => (x.id === row.id ? nextRow : x)),
+        );
+        onSaved(nextRow);
+      }
+      onClose();
+    } catch (err) {
+      setError(err.message || "Unable to update AIR Shipment.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-lg">Update AIR Status</h3>
+            <p className="text-xs text-slate-500 mt-1">{row.order_id}</p>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <div className="rounded-xl bg-slate-50 px-3.5 py-3">
+            <div className="text-xs text-slate-500">Current</div>
+            <div className="mt-1">
+              <AirStatusBadge status={row.status} />
+            </div>
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Next Status</label>
+            <input className={INPUT_CLS} value={next} readOnly />
+          </div>
+          {needsTk && (
+            <div>
+              <label className={LABEL_CLS}>Shop TK *</label>
+              <input
+                autoFocus
+                className={INPUT_CLS}
+                value={tk}
+                onChange={(e) => setTk(e.target.value)}
+                placeholder="Tracking number from shop"
+              />
+            </div>
+          )}
+          {!needsTk && (
+            <div>
+              <label className={LABEL_CLS}>TK</label>
+              <input
+                className={INPUT_CLS}
+                value={tk}
+                onChange={(e) => setTk(e.target.value)}
+                placeholder="Tracking number"
+              />
+            </div>
+          )}
+          <div>
+            <label className={LABEL_CLS}>Remark</label>
+            <textarea
+              className={`${INPUT_CLS} min-h-20 py-2`}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={busy}
+            className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {busy ? "Updating…" : `Set ${next || "Status"}`}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AirRefundModal({ open, row, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (open) {
+      setReason("");
+      setBusy(false);
+      setError("");
+    }
+  }, [open]);
+  if (!open || !row) return null;
+  async function submit(e) {
+    e.preventDefault();
+    if (!reason.trim()) return setError("Refund reason is required.");
+    setBusy(true);
+    setError("");
+    try {
+      const by = user?.name || user?.email || "Admin",
+        patch = {
+          status: AIR_ORDER_TERMINAL,
+          updated_at: new Date().toISOString(),
+          updated_by: by,
+        };
+      if (supabase && !String(row.id).startsWith("air-local-")) {
+        const { data, error } = await supabase
+          .from("air_orders")
+          .update(patch)
+          .eq("id", row.id)
+          .eq("status", "Order Processing")
+          .select("*")
+          .single();
+        if (error) throw error;
+        await supabase
+          .from("air_order_history")
+          .insert({
+            air_order_id: row.id,
+            status: AIR_ORDER_TERMINAL,
+            created_by: by,
+            note: reason.trim(),
+          });
+        onSaved(data);
+      } else {
+        const nextRow = { ...row, ...patch, refund_reason: reason.trim() };
+        airOrderLocalWrite(
+          airOrderLocalRows().map((x) => (x.id === row.id ? nextRow : x)),
+        );
+        onSaved(nextRow);
+      }
+      onClose();
+    } catch (err) {
+      setError(err.message || "Unable to refund AIR Order.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-lg text-red-700">Refund AIR Order</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Only available while Order Processing.
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <textarea
+            autoFocus
+            className={`${INPUT_CLS} min-h-28 py-2`}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why is the shop order being refunded?"
+          />
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={busy}
+            className="h-10 px-5 rounded-xl bg-red-600 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {busy ? "Refunding…" : "Confirm Refund"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function AirHistoryModal({ row, onClose }) {
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    if (supabase && row?.id && !String(row.id).startsWith("air-local-"))
+      supabase
+        .from("air_order_history")
+        .select("*")
+        .eq("air_order_id", row.id)
+        .order("created_at", { ascending: true })
+        .then(({ data }) => alive && setHistory(data || []));
+    else
+      setHistory(
+        row?.status
+          ? [
+              {
+                status: row.status,
+                created_at: row.updated_at,
+                created_by: row.updated_by,
+              },
+            ]
+          : [],
+      );
+    return () => {
+      alive = false;
+    };
+  }, [row]);
+  if (!row) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-lg">AIR Tracking History</h3>
+            <p className="text-xs text-slate-500 mt-1">{row.order_id}</p>
+          </div>
+          <button onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5">
+          <AirStatusTimeline status={row.status} history={history} />
+          <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
+            {history.map((h, i) => (
+              <div
+                key={h.id || i}
+                className="flex justify-between gap-3 text-xs"
+              >
+                <span className="font-semibold text-slate-700">{h.status}</span>
+                <span className="text-slate-400">
+                  {h.created_by || "System"} ·{" "}
+                  {h.created_at ? formatDbTimestamp(h.created_at) : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AirShipmentsPage() {
+  const { user } = useAuth();
+  const canCreate = hasPermission(user, "air_order.create"),
+    canProcess = hasPermission(user, "air_order.process"),
+    canRefund = hasPermission(user, "air_order.refund"),
+    canDelete = hasPermission(user, "air_order.delete");
+  const [rows, setRows] = useState(() => (supabase ? [] : airOrderLocalRows()));
+  const [loading, setLoading] = useState(!!supabase);
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [updateRow, setUpdateRow] = useState(null);
+  const [refundRow, setRefundRow] = useState(null);
+  const [historyRow, setHistoryRow] = useState(null);
+  const load = React.useCallback(async () => {
+    if (!supabase) {
+      setRows(airOrderLocalRows());
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    const { data } = await supabase
+      .from("air_orders")
+      .select("*")
+      .order("created_at", { ascending: false });
+    setRows(data || []);
+    setLoading(false);
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+  const filtered = rows.filter((r) => {
+    const hay = [
+      r.order_id,
+      r.tk,
+      r.customer,
+      r.shop_name,
+      r.product_name,
+      r.status,
+    ]
+      .join(" ")
+      .toLowerCase();
+    return (
+      (!q || hay.includes(q.toLowerCase())) && (!status || r.status === status)
+    );
+  });
+  async function removeRow(row) {
+    if (!canDelete) return;
+    if (!window.confirm(`Delete AIR Order ${row.order_id}?`)) return;
+    if (supabase && !String(row.id).startsWith("air-local-")) {
+      const { error } = await supabase
+        .from("air_orders")
+        .delete()
+        .eq("id", row.id);
+      if (error) return window.alert(error.message);
+    }
+    airOrderLocalWrite(airOrderLocalRows().filter((x) => x.id !== row.id));
+    await load();
+  }
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="cb-page-title font-display font-bold text-2xl text-ink-900 flex items-center gap-2">
+            <Icons.Plane className="text-signal-blue" size={24} /> AIR Shipments
+          </h1>
+          <p className="text-sm text-ink-600/55 mt-1">
+            Independent AIR workflow: Order Processing → In Transit → Indonesia
+            WH → Cambodia WH.
+          </p>
+        </div>
+        {canCreate && (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-2 h-10 px-4 rounded-xl bg-signal-blue text-white text-sm font-bold"
+          >
+            <Plus size={15} /> New AIR Order
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        {[
+          ["Total", rows.length, "text-slate-900"],
+          [
+            "Processing",
+            rows.filter((r) => r.status === "Order Processing").length,
+            "text-slate-700",
+          ],
+          [
+            "In Transit",
+            rows.filter((r) => r.status === "In Transit").length,
+            "text-blue-700",
+          ],
+          [
+            "In Indo WH",
+            rows.filter(
+              (r) =>
+                r.status === "Inbound WH Indo" ||
+                r.status === "Outbound WH Indo",
+            ).length,
+            "text-violet-700",
+          ],
+          [
+            "Inbound KH",
+            rows.filter((r) => r.status === "Inbound WH KH").length,
+            "text-emerald-700",
+          ],
+        ].map(([l, n, c]) => (
+          <div key={l} className="cb-surface p-4">
+            <p className="text-xs text-slate-500">{l}</p>
+            <p className={`text-2xl font-extrabold mt-1 ${c}`}>{n}</p>
+          </div>
+        ))}
+      </div>
+      <div className="cb-surface overflow-hidden">
+        <div className="p-4 border-b border-mist-200 flex flex-wrap gap-2">
+          <div className="relative flex-1 min-w-[220px]">
+            <Icons.Search
+              size={15}
+              className="absolute left-3 top-3 text-slate-400"
+            />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className={`${INPUT_CLS} pl-9`}
+              placeholder="Search Order ID, TK, Customer, Shop…"
+            />
+          </div>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className={`${INPUT_CLS} w-auto min-w-[190px]`}
+          >
+            <option value="">All AIR Status</option>
+            {[...AIR_ORDER_STATUS_FLOW, AIR_ORDER_TERMINAL].map((x) => (
+              <option key={x}>{x}</option>
+            ))}
+          </select>
+        </div>
+        <div className="overflow-auto">
+          <table className="min-w-[1100px] w-full text-sm">
+            <thead>
+              <tr className="bg-mist-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                {[
+                  "Shop Order ID",
+                  "Customer",
+                  "TK",
+                  "Shop",
+                  "Status",
+                  "Updated",
+                  "Actions",
+                ].map((x) => (
+                  <th key={x} className="px-4 py-3 font-semibold">
+                    {x}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-mist-100">
+              {loading ? (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="px-4 py-10 text-center text-slate-400"
+                  >
+                    Loading AIR shipments…
+                  </td>
+                </tr>
+              ) : !filtered.length ? (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="px-4 py-10 text-center text-slate-400"
+                  >
+                    No AIR shipments found.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r) => (
+                  <tr key={r.id} className="hover:bg-slate-50/70">
+                    <td className="px-4 py-3 font-bold text-slate-900">
+                      <Link
+                        to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+                        className="hover:text-blue-600"
+                      >
+                        {r.order_id}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-slate-700">
+                      {r.customer || "—"}
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-blue-700">
+                      {r.tk || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">
+                      {r.shop_name || "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <AirStatusBadge status={r.status} />
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">
+                      {r.updated_at ? formatDbTimestamp(r.updated_at) : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        {canProcess && airStatusCanAdvance(r.status) && (
+                          <button
+                            type="button"
+                            onClick={() => setUpdateRow(r)}
+                            className="h-8 px-2.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 text-xs font-bold"
+                          >
+                            {airNextStatus(r.status)}
+                          </button>
+                        )}
+                        {canRefund && r.status === "Order Processing" && (
+                          <button
+                            type="button"
+                            onClick={() => setRefundRow(r)}
+                            className="h-8 px-2.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-bold"
+                          >
+                            Refund
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setHistoryRow(r)}
+                          className="h-8 px-2.5 rounded-lg border border-slate-200 bg-white text-slate-700 text-xs font-semibold"
+                        >
+                          History
+                        </button>
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => removeRow(r)}
+                            className="h-8 w-8 rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 grid place-items-center"
+                          >
+                            <Icons.Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {createOpen && (
+        <AirOrderCreateModal
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onSaved={() => load()}
+        />
+      )}{" "}
+      {updateRow && (
+        <AirStatusUpdateModal
+          open
+          row={updateRow}
+          onClose={() => setUpdateRow(null)}
+          onSaved={() => {
+            setUpdateRow(null);
+            load();
+          }}
+        />
+      )}
+      {refundRow && (
+        <AirRefundModal
+          open
+          row={refundRow}
+          onClose={() => setRefundRow(null)}
+          onSaved={() => {
+            setRefundRow(null);
+            load();
+          }}
+        />
+      )}
+      {historyRow && (
+        <AirHistoryModal row={historyRow} onClose={() => setHistoryRow(null)} />
+      )}
+    </div>
+  );
+}
+
+function AirShipmentDetailPage() {
+  const { id } = useParams();
+  const { user } = useAuth();
+  const [row, setRow] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const canProcess = hasPermission(user, "air_order.process"),
+    canRefund = hasPermission(user, "air_order.refund");
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!supabase) {
+        const found = airOrderLocalRows().find(
+          (x) => x.order_id === id || x.id === id,
+        );
+        if (alive) {
+          setRow(found || null);
+          setHistory(
+            found
+              ? [
+                  {
+                    status: found.status,
+                    created_at: found.updated_at,
+                    created_by: found.updated_by,
+                  },
+                ]
+              : [],
+          );
+          setLoading(false);
+        }
+        return;
+      }
+      const { data } = await supabase
+        .from("air_orders")
+        .select("*")
+        .eq("order_id", id)
+        .maybeSingle();
+      if (!alive) return;
+      setRow(data || null);
+      if (data?.id) {
+        const { data: h } = await supabase
+          .from("air_order_history")
+          .select("*")
+          .eq("air_order_id", data.id)
+          .order("created_at", { ascending: true });
+        if (alive) setHistory(h || []);
+      }
+      setLoading(false);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  if (loading)
+    return (
+      <div className="py-12 text-center text-slate-400">
+        Loading AIR Shipment…
+      </div>
+    );
+  if (!row)
+    return (
+      <div className="py-12 text-center text-slate-400">
+        AIR Order not found.
+      </div>
+    );
+  return (
+    <div className="space-y-5">
+      <Link
+        to="/air-shipments"
+        className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-900"
+      >
+        <ArrowLeft size={15} /> Back to AIR Shipments
+      </Link>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <span className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 grid place-items-center">
+            <Icons.Plane size={21} />
+          </span>
+          <div>
+            <h1 className="font-bold text-2xl text-slate-900">
+              {row.order_id}
+            </h1>
+            <p className="text-sm text-slate-500 mt-0.5">
+              {row.customer || "—"} {row.tk ? `· TK ${row.tk}` : ""}
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <AirStatusBadge status={row.status} />
+          {canProcess && airStatusCanAdvance(row.status) && (
+            <button
+              onClick={() => setUpdateOpen(true)}
+              className="h-10 px-3 rounded-xl bg-blue-600 text-white text-sm font-bold"
+            >
+              {airNextStatus(row.status)}
+            </button>
+          )}
+          {canRefund && row.status === "Order Processing" && (
+            <button
+              onClick={() => setRefundOpen(true)}
+              className="h-10 px-3 rounded-xl bg-red-600 text-white text-sm font-bold"
+            >
+              Refund Order
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="grid lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2 cb-surface p-5">
+          <h2 className="font-bold text-sm mb-5">AIR Shipment Timeline</h2>
+          <AirStatusTimeline status={row.status} history={history} />
+        </div>
+        <div className="cb-surface p-5">
+          <h2 className="font-bold text-sm mb-4">Order Information</h2>
+          <InfoGrid
+            items={[
+              { label: "Shop Order ID", value: row.order_id },
+              { label: "Customer", value: row.customer || "—", span: true },
+              { label: "TK", value: row.tk || "—" },
+              { label: "Shop / Platform", value: row.shop_name || "—" },
+              { label: "Product", value: row.product_name || "—", span: true },
+              {
+                label: "Created",
+                value: row.created_at ? formatDbTimestamp(row.created_at) : "—",
+              },
+              {
+                label: "Updated",
+                value: row.updated_at ? formatDbTimestamp(row.updated_at) : "—",
+              },
+              { label: "Note", value: row.note || "—", span: true },
+            ]}
+          />
+        </div>
+      </div>
+      {updateOpen && (
+        <AirStatusUpdateModal
+          open
+          row={row}
+          onClose={() => setUpdateOpen(false)}
+          onSaved={(r) => {
+            setRow(r);
+            setUpdateOpen(false);
+          }}
+        />
+      )}
+      {refundOpen && (
+        <AirRefundModal
+          open
+          row={row}
+          onClose={() => setRefundOpen(false)}
+          onSaved={(r) => {
+            setRow(r);
+            setRefundOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -33547,6 +34928,128 @@ function DeliverySalesReport({ rows, onClose }) {
   );
 }
 
+const DELIVERY_SEARCH_FIELDS = [
+  {
+    key: "all",
+    label: "All fields",
+    ph: "Search delivery / customer / phone / TK",
+  },
+  { key: "delivery", label: "Delivery ID", ph: "Search Delivery ID" },
+  { key: "customer", label: "Customer", ph: "Search customer name or ID" },
+  { key: "phone", label: "Phone Number", ph: "Search phone number" },
+  { key: "tk", label: "TK", ph: "Search TK number" },
+  { key: "address", label: "Address", ph: "Search address" },
+];
+
+function deliveryMatches(r, field, raw) {
+  const q = raw.trim().toLowerCase();
+  if (!q) return true;
+  const has = (v) =>
+    String(v ?? "")
+      .toLowerCase()
+      .includes(q);
+  const phoneHit = () => {
+    const qd = q.replace(/\D/g, "");
+    if (!qd) return false;
+    const pd = String(r.receiver_phone ?? "").replace(/\D/g, "");
+    return pd.includes(qd) || (qd.startsWith("0") && pd.includes(qd.slice(1)));
+  };
+  const tkHit = () => (r.items || []).some((i) => has(i.tk));
+  switch (field) {
+    case "delivery":
+      return has(r.delivery_no);
+    case "customer":
+      return has(r.customer_name) || has(r.customer_code);
+    case "phone":
+      return phoneHit();
+    case "tk":
+      return tkHit();
+    case "address":
+      return has(r.address_text);
+    default:
+      return (
+        has(r.delivery_no) ||
+        has(r.customer_name) ||
+        has(r.customer_code) ||
+        has(r.address_text) ||
+        phoneHit() ||
+        tkHit()
+      );
+  }
+}
+
+function DeliverySearchBar({ field, setField, value, setValue }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+  const cur =
+    DELIVERY_SEARCH_FIELDS.find((f) => f.key === field) ||
+    DELIVERY_SEARCH_FIELDS[0];
+  return (
+    <div
+      ref={ref}
+      className="relative flex items-stretch rounded-md border border-mist-200 bg-white focus-within:border-signal-blue focus-within:ring-1 focus-within:ring-signal-blue/30 w-full sm:w-[26rem]"
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 pl-3 pr-2 text-sm font-medium text-ink-900 border-r border-mist-200 whitespace-nowrap hover:bg-mist-50 rounded-l-md"
+      >
+        {cur.label}
+        <Icons.ChevronDown
+          size={14}
+          className={`text-ink-600/50 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={cur.ph}
+        className="flex-1 min-w-0 px-3 py-2 text-sm bg-transparent outline-none placeholder:text-ink-600/40"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => setValue("")}
+          title="Clear"
+          className="px-2.5 text-ink-600/50 hover:text-ink-900"
+        >
+          <X size={14} />
+        </button>
+      ) : (
+        <span className="px-2.5 flex items-center text-ink-600/40">
+          <Icons.Search size={14} />
+        </span>
+      )}
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-30 w-52 rounded-md border border-mist-200 bg-white shadow-lg py-1">
+          {DELIVERY_SEARCH_FIELDS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => {
+                setField(f.key);
+                setOpen(false);
+              }}
+              className={`w-full flex items-center justify-between px-4 py-2 text-sm text-left hover:bg-mist-50 ${f.key === field ? "text-signal-blue font-medium" : "text-ink-900"}`}
+            >
+              {f.label}
+              {f.key === field && <Icons.Check size={14} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DeliveryPage() {
   const { user } = useAuth();
   const { packages, upsertPackage, logStatus } = usePackageTracking();
@@ -33561,6 +35064,8 @@ function DeliveryPage() {
   const [courierF, setCourierF] = useState("");
   const [payF, setPayF] = useState("");
   const [report, setReport] = useState(null); // "couriers" | "sales"
+  const [searchBy, setSearchBy] = useState("all");
+  const [newestFirst, setNewestFirst] = useState(true);
 
   const canCreate = hasPermission(user, "delivery.create");
   const canEdit = hasPermission(user, "delivery.edit");
@@ -33615,21 +35120,15 @@ function DeliveryPage() {
     [packages, activeTks],
   );
 
-  const shown = scoped.filter((r) => {
-    if (tab !== "All" && r.status !== tab) return false;
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    return [
-      r.delivery_no,
-      r.customer_code,
-      r.customer_name,
-      r.receiver_phone,
-      ...(r.items || []).map((i) => i.tk),
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(q);
-  });
+  const shown = useMemo(() => {
+    const list = scoped.filter(
+      (r) =>
+        (tab === "All" || r.status === tab) &&
+        deliveryMatches(r, searchBy, search),
+    );
+    const t = (r) => new Date(r.requested_at).getTime() || 0;
+    return list.sort((x, y) => (newestFirst ? t(y) - t(x) : t(x) - t(y)));
+  }, [scoped, tab, search, searchBy, newestFirst]);
 
   async function submitRequest(d, items) {
     if (!canCreate) throw new Error("អ្នកគ្មានសិទ្ធិ Request Delivery ទេ");
@@ -33908,15 +35407,29 @@ function DeliveryPage() {
                 </button>
               ))}
             </div>
-            <div className="pb-2">
-              <input
+            <div className="pb-2 flex items-center gap-2 flex-wrap">
+              <DeliverySearchBar
+                field={searchBy}
+                setField={setSearchBy}
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search delivery / customer / TK"
-                className={INPUT_CLS + " !w-64"}
+                setValue={setSearch}
               />
+              <button
+                type="button"
+                onClick={() => setNewestFirst((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-sm text-ink-600/70 hover:text-ink-900 px-2 py-2 whitespace-nowrap"
+              >
+                <Icons.ArrowUpDown size={14} />
+                {newestFirst ? "Newest first" : "Oldest first"}
+              </button>
             </div>
           </div>
+          {search.trim() && (
+            <div className="px-4 py-2 text-xs text-ink-600/60 border-b border-mist-200">
+              {shown.length} result{shown.length === 1 ? "" : "s"} for “
+              {search.trim()}”
+            </div>
+          )}
           <DataTable
             columns={columns}
             rows={shown}
@@ -33988,6 +35501,11 @@ function AdminApp() {
         >
           <Route path="/" element={<Dashboard />} />
           <Route path="/orders/:id" element={<OrderDetail />} />
+          <Route path="/air-shipments" element={<AirShipmentsPage />} />
+          <Route
+            path="/air-shipments/:id"
+            element={<AirShipmentDetailPage />}
+          />
           <Route path="/packages/:tk" element={<PackageDetail />} />
           <Route path="/containers" element={<ContainersPage />} />
           <Route path="/containers/:id" element={<ContainerDetail />} />
@@ -34026,6 +35544,7 @@ function AdminApp() {
                 "/wallet-top-up",
                 "/delivery",
                 "/shipments", // module removed — Container is the only grouping
+                "/air-shipments", // custom AIR module above
                 "/arrival", // hidden — Containers › Arrived Destination confirms arrival
               ].includes(item.path),
           ).map((item) => {
