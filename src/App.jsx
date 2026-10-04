@@ -8,7 +8,7 @@
 //   - .env (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY) if using Supabase
 //   - supabase/schema.sql run once in the Supabase SQL editor
 // Save this as src/main.jsx and delete the old src/App.jsx and
-// src/components, src/pages, src/context, src/lib files it replaces.
+// src/components, src/pages, src/context, src/lib files it replaxces.
 // =============================================================
 
 import React, {
@@ -25942,8 +25942,13 @@ const AIR_ORDER_STATUS_FLOW = [
   "Received at Indonesia Warehouse",
   "Departed Indonesia Warehouse",
   "Received at Cambodia Warehouse",
+  "Complete Order",
 ];
 const AIR_ORDER_TERMINAL = "Refund Order";
+const AIR_ORDER_TERMINAL_STATUSES = new Set([
+  "Complete Order",
+  AIR_ORDER_TERMINAL,
+]);
 const AIR_ORDER_LS_KEY = "cargo_bridge_air_orders_v1";
 
 // Backward compatibility for AIR rows created before the status labels were
@@ -25972,15 +25977,20 @@ function airStatusTone(status) {
     return "bg-amber-50 text-amber-700";
   if (status === "Received at Cambodia Warehouse")
     return "bg-emerald-50 text-emerald-700";
+  if (status === "Complete Order") return "bg-emerald-50 text-emerald-700";
   if (status === AIR_ORDER_TERMINAL) return "bg-red-50 text-red-700";
   return "bg-slate-100 text-slate-600";
 }
 function airStatusCanAdvance(status) {
-  const i = airStatusIndex(status);
+  const label = canonicalAirStatus(status);
+  if (AIR_ORDER_TERMINAL_STATUSES.has(label)) return false;
+  const i = airStatusIndex(label);
   return i >= 0 && i < AIR_ORDER_STATUS_FLOW.length - 1;
 }
 function airNextStatus(status) {
-  const i = airStatusIndex(status);
+  const label = canonicalAirStatus(status);
+  if (AIR_ORDER_TERMINAL_STATUSES.has(label)) return null;
+  const i = airStatusIndex(label);
   return i >= 0 ? AIR_ORDER_STATUS_FLOW[i + 1] || null : null;
 }
 function airOrderLocalRows() {
@@ -26004,9 +26014,12 @@ function AirStatusBadge({ status }) {
 }
 function AirStatusTimeline({ status, history = [] }) {
   const normalizedStatus = canonicalAirStatus(status);
-  const current =
-    normalizedStatus === AIR_ORDER_TERMINAL
-      ? -1
+  const isRefunded = normalizedStatus === AIR_ORDER_TERMINAL;
+  const isComplete = normalizedStatus === "Complete Order";
+  const current = isRefunded
+    ? -1
+    : isComplete
+      ? AIR_ORDER_STATUS_FLOW.length
       : airStatusIndex(normalizedStatus);
   return (
     <div className="space-y-1" role="list" aria-label="AIR shipment tracking">
