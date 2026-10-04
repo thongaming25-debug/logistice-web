@@ -9457,8 +9457,365 @@ function Icon({ name, ...props }) {
   return <Cmp {...props} />;
 }
 
+// ------------------------------------------------------------
+// Admin / Staff preferences: Language (EN / ខ្មែរ) + Appearance (Light / Dark / Device)
+// Stored per browser. Dark mode is applied by a scoped stylesheet
+// (html.cb-admin-dark) that remaps the light Tailwind classes, and is removed
+// again when leaving the admin area, so the Customer Portal is unaffected.
+// ------------------------------------------------------------
+const ADMIN_THEME_KEY = "cb_admin_theme";
+const ADMIN_LANG_KEY = "cb_admin_lang";
+const readAdminTheme = () => {
+  try {
+    const v = localStorage.getItem(ADMIN_THEME_KEY);
+    return v === "light" || v === "dark" || v === "system" ? v : "light";
+  } catch {
+    return "light";
+  }
+};
+const readAdminLang = () => {
+  try {
+    return localStorage.getItem(ADMIN_LANG_KEY) === "km" ? "km" : "en";
+  } catch {
+    return "en";
+  }
+};
+
+// English → Khmer. Anything missing simply stays English, so more strings can
+// be added here at any time: "English text": "ខ្មែរ".
+const ADMIN_KM = {
+  // navigation
+  Dashboard: "ផ្ទាំងគ្រប់គ្រង",
+  Operations: "ប្រតិបត្តិការ",
+  "Packages / TK": "កញ្ចប់ / TK",
+  "Scan Center": "មជ្ឈមណ្ឌលស្កេន",
+  "Process Tracking": "តាមដានដំណើរការ",
+  "Exception Center": "មជ្ឈមណ្ឌលករណីលើកលែង",
+  "Inbound Origin": "ទទួលចូលនៅប្រភព",
+  "Outbound Origin": "ចេញពីប្រភព",
+  Containers: "កុងតេន័រ",
+  "Shipment Lookup": "ស្វែងរកការដឹកជញ្ជូន",
+  "AIR Shipments": "ដឹកជញ្ជូនផ្លូវអាកាស",
+  Cambodia: "កម្ពុជា",
+  "W.H Arrived (Destination)": "ឃ្លាំងមកដល់ (គោលដៅ)",
+  "Cambodia Warehouse": "ឃ្លាំងកម្ពុជា",
+  Sorting: "ការតម្រៀប",
+  Delivery: "ការដឹកជូន",
+  Customers: "អតិថិជន",
+  "Customer Accounts": "គណនីអតិថិជន",
+  "Customer Addresses": "អាសយដ្ឋានអតិថិជន",
+  "Customer ID Transfer": "ផ្ទេរលេខសម្គាល់អតិថិជន",
+  "Customer Features": "មុខងារអតិថិជន",
+  Warehouse: "ឃ្លាំង",
+  "Warehouse Management": "គ្រប់គ្រងឃ្លាំង",
+  Locations: "ទីតាំង",
+  "Warehouse Operations": "ប្រតិបត្តិការឃ្លាំង",
+  Finance: "ហិរញ្ញវត្ថុ",
+  "Wallet Top Up": "បញ្ចូលកាបូប",
+  "Exceptions & Reports": "ករណីលើកលែង និងរបាយការណ៍",
+  Exceptions: "ករណីលើកលែង",
+  "Reports & Analytics": "របាយការណ៍ និងការវិភាគ",
+  System: "ប្រព័ន្ធ",
+  Users: "អ្នកប្រើប្រាស់",
+  "Role Management": "គ្រប់គ្រងតួនាទី",
+  "Status Master": "ស្ថានភាពមេ",
+  "Audit Logs": "កំណត់ត្រាសវនកម្ម",
+  Settings: "ការកំណត់",
+  Notifications: "ការជូនដំណឹង",
+  MAIN: "ទូទៅ",
+  // top bar / menus
+  "Search pages or jump to a menu...": "ស្វែងរកទំព័រ ឬទៅកាន់ម៉ឺនុយ...",
+  "Search pages or menu...": "ស្វែងរកទំព័រ ឬម៉ឺនុយ...",
+  "Search Results": "លទ្ធផលស្វែងរក",
+  "No pages found": "រកមិនឃើញទំព័រ",
+  "Try another page name or route.": "សូមសាកល្បងឈ្មោះទំព័រ ឬផ្លូវផ្សេង។",
+  Navigate: "រុករក",
+  Open: "បើក",
+  Close: "បិទ",
+  Cancel: "បោះបង់",
+  Admin: "អ្នកគ្រប់គ្រង",
+  "My Account": "គណនីរបស់ខ្ញុំ",
+  "Log out": "ចាកចេញ",
+  Language: "ភាសា",
+  Appearance: "រូបរាង",
+  Light: "ភ្លឺ",
+  Dark: "ងងឹត",
+  Device: "តាមឧបករណ៍",
+  "Light theme": "ពណ៌ភ្លឺ",
+  "Dark theme": "ពណ៌ងងឹត",
+  "Use device theme": "ប្រើតាមឧបករណ៍",
+  // login
+  "Sign in": "ចូលគណនី",
+  "Sign in to access your logistics management workspace.":
+    "ចូលគណនីដើម្បីប្រើប្រព័ន្ធគ្រប់គ្រងភស្តុភារ។",
+  Email: "អ៊ីមែល",
+  Password: "លេខសម្ងាត់",
+  "Forgot password?": "ភ្លេចលេខសម្ងាត់?",
+  "Remember me": "ចងចាំខ្ញុំ",
+  "Signing in...": "កំពុងចូល...",
+  "Please enter your email and password.": "សូមបញ្ចូលអ៊ីមែល និងលេខសម្ងាត់។",
+  "Incorrect email or password.": "អ៊ីមែល ឬលេខសម្ងាត់មិនត្រឹមត្រូវ។",
+  "Contact an Admin to reset your password.":
+    "សូមទាក់ទងអ្នកគ្រប់គ្រង ដើម្បីកំណត់លេខសម្ងាត់ឡើងវិញ។",
+  "Welcome back!": "សូមស្វាគមន៍ការត្រឡប់មកវិញ!",
+  "Signing you in…": "កំពុងចូលគណនី…",
+  "Redirecting to your dashboard": "កំពុងនាំអ្នកទៅផ្ទាំងគ្រប់គ្រង",
+  "Preparing your workspace": "កំពុងរៀបចំកន្លែងធ្វើការ",
+};
+
+const ADMIN_DARK_CSS = String.raw`
+html.cb-admin-dark{--cb-bg:#0b1120;--cb-border:#263043;--cb-text:#e2e8f0;--cb-muted:#94a3b8;color-scheme:dark}
+html.cb-admin-dark body{background:#0b1120;color:#e2e8f0}
+html.cb-admin-dark .bg-\[\#f4f7fb\]{background-color:#0b1120}
+html.cb-admin-dark .cb-surface{background:#151c2c;border-color:#263043;box-shadow:0 8px 30px rgba(0,0,0,.25)}
+html.cb-admin-dark .cb-topbar{background:rgba(15,22,38,.9);border-bottom-color:#1e2638}
+html.cb-admin-dark .cb-input{background:#0f1626;border-color:#263043;color:#f1f5f9}
+html.cb-admin-dark .cb-input:focus{background:#0f1626;border-color:#60a5fa;box-shadow:0 0 0 4px rgba(96,165,250,.14)}
+html.cb-admin-dark .cb-card{box-shadow:0 8px 28px rgba(0,0,0,.28)!important}
+html.cb-admin-dark .cb-table-row:hover{background:#1b2436}
+html.cb-admin-dark .cb-sidebar{background:linear-gradient(180deg,#070f20 0%,#0b1730 100%);border-right:1px solid #16203a}
+html.cb-admin-dark input,html.cb-admin-dark textarea,html.cb-admin-dark select{color:#f1f5f9}
+html.cb-admin-dark input::placeholder,html.cb-admin-dark textarea::placeholder{color:#64728b}
+html.cb-admin-dark .cb-sk{background-color:#1e2638;background-image:linear-gradient(100deg,rgba(255,255,255,0) 30%,rgba(255,255,255,.07) 50%,rgba(255,255,255,0) 70%)}
+/* surfaces */
+html.cb-admin-dark .bg-white,html.cb-admin-dark .hover\:bg-white:hover{background-color:#151c2c}
+html.cb-admin-dark .focus\:bg-white:focus,html.cb-admin-dark .bg-\[\#fbfcfe\]{background-color:#0f1626}
+html.cb-admin-dark .bg-mist-50,html.cb-admin-dark .bg-slate-50,html.cb-admin-dark .disabled\:bg-mist-50:disabled{background-color:#101827}
+html.cb-admin-dark .bg-mist-50\/70,html.cb-admin-dark .bg-mist-50\/60,html.cb-admin-dark .bg-mist-50\/50,html.cb-admin-dark .bg-slate-50\/70{background-color:rgba(16,24,39,.7)}
+html.cb-admin-dark .bg-mist-100,html.cb-admin-dark .bg-slate-100{background-color:#1b2436}
+html.cb-admin-dark .bg-mist-200,html.cb-admin-dark .bg-slate-200{background-color:#263043}
+html.cb-admin-dark .hover\:bg-mist-50:hover,html.cb-admin-dark .hover\:bg-slate-50:hover,html.cb-admin-dark .group:hover .group-hover\:bg-mist-50,html.cb-admin-dark .hover\:bg-mist-50\/70:hover,html.cb-admin-dark .hover\:bg-mist-50\/60:hover,html.cb-admin-dark .hover\:bg-slate-50\/60:hover,html.cb-admin-dark .hover\:bg-slate-50\/70:hover{background-color:#1b2436}
+html.cb-admin-dark .hover\:bg-mist-100:hover,html.cb-admin-dark .hover\:bg-slate-100:hover{background-color:#222c41}
+html.cb-admin-dark .bg-ink-900\/5{background-color:rgba(255,255,255,.05)}
+/* text */
+html.cb-admin-dark .text-ink-900,html.cb-admin-dark .text-slate-900{color:#f1f5f9}
+html.cb-admin-dark .text-ink-800,html.cb-admin-dark .text-slate-800{color:#e2e8f0}
+html.cb-admin-dark .text-ink-700,html.cb-admin-dark .text-slate-700{color:#cbd5e1}
+html.cb-admin-dark .text-ink-600,html.cb-admin-dark .text-slate-600{color:#a9b6c9}
+html.cb-admin-dark .text-slate-500,html.cb-admin-dark .text-ink-600\/70,html.cb-admin-dark .text-ink-600\/65,html.cb-admin-dark .text-ink-600\/60,html.cb-admin-dark .text-ink-600\/55{color:#94a3b8}
+html.cb-admin-dark .text-slate-400,html.cb-admin-dark .text-ink-600\/50,html.cb-admin-dark .text-ink-600\/45,html.cb-admin-dark .disabled\:text-ink-600\/60:disabled{color:#7385a0}
+html.cb-admin-dark .text-ink-600\/40,html.cb-admin-dark .text-ink-600\/35{color:#64728b}
+html.cb-admin-dark .text-ink-600\/30,html.cb-admin-dark .text-ink-600\/25,html.cb-admin-dark .text-ink-600\/20{color:#4b586e}
+html.cb-admin-dark .placeholder\:text-ink-600\/40::placeholder,html.cb-admin-dark .placeholder\:text-ink-600\/35::placeholder{color:#64728b}
+html.cb-admin-dark .hover\:text-ink-900:hover,html.cb-admin-dark .hover\:text-slate-900:hover{color:#fff}
+html.cb-admin-dark .hover\:text-ink-800:hover,html.cb-admin-dark .hover\:text-slate-700:hover{color:#e2e8f0}
+/* borders */
+html.cb-admin-dark .border-mist-200,html.cb-admin-dark .border-slate-200{border-color:#263043}
+html.cb-admin-dark .border-mist-100,html.cb-admin-dark .border-slate-100{border-color:#1e2638}
+html.cb-admin-dark .border-mist-300,html.cb-admin-dark .hover\:border-mist-300:hover{border-color:#334155}
+html.cb-admin-dark .divide-mist-100>:not([hidden])~:not([hidden]),html.cb-admin-dark .divide-slate-100>:not([hidden])~:not([hidden]){border-color:#1e2638}
+html.cb-admin-dark .divide-mist-200>:not([hidden])~:not([hidden]){border-color:#263043}
+/* tinted status colours */
+html.cb-admin-dark .bg-blue-50,html.cb-admin-dark .bg-blue-50\/60,html.cb-admin-dark .hover\:bg-blue-50:hover{background-color:rgba(37,99,235,.16)}
+html.cb-admin-dark .text-blue-600{color:#60a5fa}
+html.cb-admin-dark .text-blue-700{color:#93c5fd}
+html.cb-admin-dark .text-blue-800,html.cb-admin-dark .hover\:text-blue-700:hover{color:#bfdbfe}
+html.cb-admin-dark .border-blue-100{border-color:rgba(96,165,250,.25)}
+html.cb-admin-dark .border-blue-200,html.cb-admin-dark .hover\:border-blue-300:hover{border-color:rgba(96,165,250,.38)}
+html.cb-admin-dark .bg-amber-50,html.cb-admin-dark .bg-\[\#FFFBEB\]{background-color:rgba(245,158,11,.14)}
+html.cb-admin-dark .text-amber-600,html.cb-admin-dark .text-amber-700,html.cb-admin-dark .text-amber-800,html.cb-admin-dark .text-amber-900,html.cb-admin-dark .text-\[\#B87415\],html.cb-admin-dark .text-\[\#8A5A12\],html.cb-admin-dark .text-\[\#92400E\]{color:#fbbf24}
+html.cb-admin-dark .border-amber-200,html.cb-admin-dark .border-\[\#FDE68A\]{border-color:rgba(245,158,11,.35)}
+html.cb-admin-dark .bg-red-50,html.cb-admin-dark .hover\:bg-red-50:hover,html.cb-admin-dark .bg-\[\#FEF2F2\]{background-color:rgba(239,68,68,.14)}
+html.cb-admin-dark .text-red-600,html.cb-admin-dark .hover\:text-red-600:hover,html.cb-admin-dark .text-\[\#B91C1C\]{color:#f87171}
+html.cb-admin-dark .text-red-700,html.cb-admin-dark .text-red-800{color:#fca5a5}
+html.cb-admin-dark .border-red-200,html.cb-admin-dark .border-\[\#FECACA\]{border-color:rgba(248,113,113,.32)}
+html.cb-admin-dark .bg-emerald-50{background-color:rgba(16,185,129,.14)}
+html.cb-admin-dark .text-emerald-600,html.cb-admin-dark .text-emerald-700,html.cb-admin-dark .text-emerald-800,html.cb-admin-dark .text-emerald-700\/80{color:#34d399}
+html.cb-admin-dark .border-emerald-200{border-color:rgba(52,211,153,.32)}
+html.cb-admin-dark .text-violet-700{color:#a78bfa}
+html.cb-admin-dark .text-rose-600,html.cb-admin-dark .text-rose-800{color:#fb7185}
+html.cb-admin-dark .border-rose-200{border-color:rgba(251,113,133,.32)}
+/* login page */
+html.cb-admin-dark .cb-login-page{background-color:#0b1120}
+html.cb-admin-dark .cb-login-page .bg-white\/95,html.cb-admin-dark .cb-login-page .bg-white\/90{background-color:rgba(21,28,44,.92)}
+html.cb-admin-dark .cb-login-page .border-white\/80{border-color:rgba(148,163,184,.14)}
+`;
+
+// Khmer font for the admin area (the fonts are already loaded by the
+// Customer Portal module; this only switches the family).
+const ADMIN_KM_CSS = String.raw`
+html.cb-admin-km body,html.cb-admin-km #root,html.cb-admin-km .font-display,
+html.cb-admin-km .cb-app *:not(.font-mono),html.cb-admin-km .cb-login-page *:not(.font-mono){font-family:'Kantumruy Pro','Noto Sans Khmer',Inter,system-ui,sans-serif!important}
+html.cb-admin-km .leading-tight,html.cb-admin-km .leading-snug,html.cb-admin-km .leading-none{line-height:1.5}
+`;
+
+const AdminPrefsCtx = createContext(null);
+const ADMIN_PREFS_FALLBACK = {
+  theme: "light",
+  dark: false,
+  lang: "en",
+  setTheme: () => {},
+  setLang: () => {},
+  t: (s) => s,
+};
+function useAdminPrefs() {
+  return useContext(AdminPrefsCtx) || ADMIN_PREFS_FALLBACK;
+}
+
+function AdminPrefsProvider({ children }) {
+  const [theme, setThemeState] = useState(readAdminTheme);
+  const [lang, setLangState] = useState(readAdminLang);
+  const [sysDark, setSysDark] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      !!window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (e) => setSysDark(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
+  const dark = theme === "dark" || (theme === "system" && sysDark);
+
+  useEffect(() => {
+    const el = document.documentElement;
+    el.classList.toggle("cb-admin-dark", dark);
+    return () => el.classList.remove("cb-admin-dark");
+  }, [dark]);
+  useEffect(() => {
+    const el = document.documentElement;
+    el.classList.toggle("cb-admin-km", lang === "km");
+    return () => el.classList.remove("cb-admin-km");
+  }, [lang]);
+
+  const setTheme = (v) => {
+    setThemeState(v);
+    try {
+      localStorage.setItem(ADMIN_THEME_KEY, v);
+    } catch {}
+  };
+  const setLang = (v) => {
+    setLangState(v);
+    try {
+      localStorage.setItem(ADMIN_LANG_KEY, v);
+    } catch {}
+  };
+  const t = (s) => (lang === "km" ? ADMIN_KM[s] || s : s);
+
+  return (
+    <AdminPrefsCtx.Provider value={{ theme, setTheme, dark, lang, setLang, t }}>
+      {dark && <style>{ADMIN_DARK_CSS}</style>}
+      {lang === "km" && <style>{ADMIN_KM_CSS}</style>}
+      {children}
+    </AdminPrefsCtx.Provider>
+  );
+}
+
+// Small centred picker used by the user menu (Language / Appearance).
+function AdminPrefsModal({ kind, onClose }) {
+  const { theme, setTheme, lang, setLang, t } = useAdminPrefs();
+  const isLang = kind === "lang";
+  const opts = isLang
+    ? [
+        ["en", "English", "🇬🇧"],
+        ["km", "ភាសាខ្មែរ", "🇰🇭"],
+      ]
+    : [
+        ["light", t("Light theme"), Icons.Sun],
+        ["dark", t("Dark theme"), Icons.Moon],
+        ["system", t("Use device theme"), Icons.Monitor],
+      ];
+  const current = isLang ? lang : theme;
+  return (
+    <div
+      className="fixed inset-0 z-[110] bg-ink-900/40 flex items-center justify-center px-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-lg w-full max-w-sm p-5"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        <h3 className="font-display font-bold text-base text-ink-900 mb-4">
+          {isLang ? t("Language") : t("Appearance")}
+        </h3>
+        <div className="space-y-2">
+          {opts.map(([k, label, ic]) => {
+            const on = current === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => {
+                  if (isLang) setLang(k);
+                  else setTheme(k);
+                  onClose();
+                }}
+                className={`w-full h-12 rounded-xl flex items-center gap-3 px-3.5 text-sm font-semibold border transition-colors ${
+                  on
+                    ? "bg-signal-blue text-white border-signal-blue shadow-lg shadow-blue-500/20"
+                    : "bg-mist-50 text-ink-800 border-mist-200 hover:border-mist-300"
+                }`}
+              >
+                {isLang ? (
+                  <span className="text-lg leading-none">{ic}</span>
+                ) : (
+                  React.createElement(ic, { size: 17 })
+                )}
+                <span className="flex-1 text-left">{label}</span>
+                <span
+                  className={`w-5 h-5 rounded-full grid place-items-center ${
+                    on
+                      ? "bg-white/95 text-signal-blue"
+                      : "border border-mist-300"
+                  }`}
+                >
+                  {on && <Check size={12} strokeWidth={3} />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-3 w-full text-sm font-medium text-center border border-mist-200 py-2 rounded-md hover:bg-mist-50"
+        >
+          {t("Cancel")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Quick language + theme buttons shown in the corner of the Login page.
+function AdminLoginPrefs() {
+  const { dark, setTheme, lang, setLang, t } = useAdminPrefs();
+  const btn =
+    "h-10 w-10 grid place-items-center rounded-full border border-mist-200 bg-white/90 text-ink-700 shadow-sm hover:bg-white transition";
+  return (
+    <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+      <button
+        type="button"
+        className={`${btn} text-lg`}
+        aria-label={t("Language")}
+        onClick={() => setLang(lang === "km" ? "en" : "km")}
+      >
+        {lang === "km" ? "🇰🇭" : "🇬🇧"}
+      </button>
+      <button
+        type="button"
+        className={btn}
+        aria-label={t("Appearance")}
+        onClick={() => setTheme(dark ? "light" : "dark")}
+      >
+        {dark ? <Icons.Sun size={18} /> : <Icons.Moon size={18} />}
+      </button>
+    </div>
+  );
+}
+
 function Sidebar({ open, onClose }) {
   const { user } = useAuth();
+  const { t } = useAdminPrefs();
   const systemSettings = useSystemSettings();
   const company = systemSettings.company || DEFAULT_SYSTEM_SETTINGS.company;
   const sidebarLogo = company.logoUrl || company.logoDataUrl || "";
@@ -9512,7 +9869,7 @@ function Sidebar({ open, onClose }) {
               <div key={i}>
                 {section.label && (
                   <div className="px-3 mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-mist-100/35">
-                    {section.label}
+                    {t(section.label)}
                   </div>
                 )}
                 <div className="space-y-0.5">
@@ -9535,7 +9892,7 @@ function Sidebar({ open, onClose }) {
                         strokeWidth={2}
                         className="shrink-0"
                       />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{t(item.label)}</span>
                     </NavLink>
                   ))}
                 </div>
@@ -9557,6 +9914,8 @@ function Sidebar({ open, onClose }) {
 // ------------------------------------------------------------
 function Topbar({ title, onMenuClick }) {
   const { user, logout } = useAuth();
+  const { t, lang, theme } = useAdminPrefs();
+  const [prefsModal, setPrefsModal] = useState(null); // null | "lang" | "theme"
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
@@ -9598,10 +9957,11 @@ function Topbar({ title, onMenuClick }) {
 
     return flatCommandItems.filter((item) => {
       const haystack =
-        `${item.label} ${item.path} ${item.section || ""}`.toLowerCase();
+        `${item.label} ${t(item.label)} ${item.path} ${item.section || ""}`.toLowerCase();
       return haystack.includes(q);
     });
-  }, [flatCommandItems, commandQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flatCommandItems, commandQuery, lang]);
 
   useEffect(() => {
     setActiveIndex(0);
@@ -9712,7 +10072,7 @@ function Topbar({ title, onMenuClick }) {
         </button>
 
         <h1 className="cb-page-title font-display font-bold text-lg text-ink-900 hidden sm:block">
-          {title}
+          {t(title)}
         </h1>
 
         <button
@@ -9726,7 +10086,7 @@ function Topbar({ title, onMenuClick }) {
         >
           <Search size={18} className="text-ink-600/45 shrink-0" />
           <span className="text-sm text-ink-600/55 flex-1">
-            Search pages or jump to a menu...
+            {t("Search pages or jump to a menu...")}
           </span>
           <kbd
             className="hidden lg:inline-flex items-center rounded-md border border-mist-200
@@ -9763,7 +10123,7 @@ function Topbar({ title, onMenuClick }) {
               <div className="text-sm font-medium text-ink-900 capitalize">
                 {displayName}
               </div>
-              <div className="text-[11px] text-ink-600/50">Admin</div>
+              <div className="text-[11px] text-ink-600/50">{t("Admin")}</div>
             </div>
             <ChevronDown
               size={15}
@@ -9772,7 +10132,7 @@ function Topbar({ title, onMenuClick }) {
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 mt-2 w-48 bg-white border border-mist-200 rounded-md shadow-lg py-1.5 z-50">
+            <div className="absolute right-0 mt-2 w-60 bg-white border border-mist-200 rounded-md shadow-lg py-1.5 z-50">
               <div className="px-3.5 py-2 border-b border-mist-100">
                 <div className="text-sm font-medium text-ink-900 truncate">
                   {displayName}
@@ -9789,14 +10149,45 @@ function Topbar({ title, onMenuClick }) {
                 className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-ink-700 hover:bg-mist-50 text-left"
               >
                 <UserRound size={15} />
-                My Account
+                {t("My Account")}
               </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setPrefsModal("lang");
+                }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-ink-700 hover:bg-mist-50 text-left"
+              >
+                <Icons.Languages size={15} />
+                <span className="flex-1">{t("Language")}</span>
+                <span className="text-xs text-ink-600/50">
+                  {lang === "km" ? "ខ្មែរ" : "English"}
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  setPrefsModal("theme");
+                }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-ink-700 hover:bg-mist-50 text-left"
+              >
+                <Icons.Palette size={15} />
+                <span className="flex-1">{t("Appearance")}</span>
+                <span className="text-xs text-ink-600/50">
+                  {theme === "dark"
+                    ? t("Dark")
+                    : theme === "system"
+                      ? t("Device")
+                      : t("Light")}
+                </span>
+              </button>
+              <div className="my-1 border-t border-mist-100" />
               <button
                 onClick={handleLogout}
                 className="w-full flex items-center gap-2.5 px-3.5 py-2 text-sm text-signal-red hover:bg-signal-red/5 text-left"
               >
                 <LogOut size={15} />
-                Log out
+                {t("Log out")}
               </button>
             </div>
           )}
@@ -9812,7 +10203,7 @@ function Topbar({ title, onMenuClick }) {
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="font-display font-bold text-base text-ink-900 mb-4">
-                My Account
+                {t("My Account")}
               </h3>
               <div className="flex items-center gap-3 mb-4">
                 <div className="w-11 h-11 rounded-full bg-ink-800 text-white text-sm font-semibold flex items-center justify-center shrink-0">
@@ -9831,12 +10222,19 @@ function Topbar({ title, onMenuClick }) {
                 onClick={() => setShowAccount(false)}
                 className="w-full text-sm font-medium text-center border border-mist-200 py-2 rounded-md hover:bg-mist-50"
               >
-                Close
+                {t("Close")}
               </button>
             </div>
           </div>
         )}
       </header>
+
+      {prefsModal && (
+        <AdminPrefsModal
+          kind={prefsModal}
+          onClose={() => setPrefsModal(null)}
+        />
+      )}
 
       {commandOpen && (
         <div
@@ -9856,7 +10254,7 @@ function Topbar({ title, onMenuClick }) {
                 ref={commandInputRef}
                 value={commandQuery}
                 onChange={(e) => setCommandQuery(e.target.value)}
-                placeholder="Search pages or menu..."
+                placeholder={t("Search pages or menu...")}
                 className="flex-1 bg-transparent outline-none text-base text-ink-900 placeholder:text-ink-600/40"
                 autoComplete="off"
                 aria-label="Search pages"
@@ -9871,7 +10269,7 @@ function Topbar({ title, onMenuClick }) {
                 filteredCommandItems.length ? (
                   <div className="px-3">
                     <div className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-600/45">
-                      Search Results
+                      {t("Search Results")}
                     </div>
                     {filteredCommandItems.map((item, index) => (
                       <button
@@ -9889,7 +10287,7 @@ function Topbar({ title, onMenuClick }) {
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block text-sm font-medium truncate">
-                            {item.label}
+                            {t(item.label)}
                           </span>
                           <span className="block text-[11px] text-ink-600/40 truncate">
                             {item.path}
@@ -9910,10 +10308,10 @@ function Topbar({ title, onMenuClick }) {
                       className="mx-auto text-ink-600/20 mb-3"
                     />
                     <div className="text-sm font-medium text-ink-800">
-                      No pages found
+                      {t("No pages found")}
                     </div>
                     <div className="text-xs text-ink-600/45 mt-1">
-                      Try another page name or route.
+                      {t("Try another page name or route.")}
                     </div>
                   </div>
                 )
@@ -9925,7 +10323,7 @@ function Topbar({ title, onMenuClick }) {
                       className="mb-4 last:mb-0"
                     >
                       <div className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-600/45">
-                        {section.label}
+                        {t(section.label)}
                       </div>
 
                       {section.items.map((item) => {
@@ -9953,7 +10351,7 @@ function Topbar({ title, onMenuClick }) {
                               />
                             </span>
                             <span className="min-w-0 flex-1 text-sm font-medium truncate">
-                              {item.label}
+                              {t(item.label)}
                             </span>
                             <span className="text-[11px] text-ink-600/35 truncate max-w-[220px]">
                               {item.path}
@@ -9969,13 +10367,13 @@ function Topbar({ title, onMenuClick }) {
 
             <div className="h-11 px-5 border-t border-mist-100 bg-mist-50/50 flex items-center gap-4 text-[11px] text-ink-600/45">
               <span>
-                <b className="text-ink-600/60">↑ ↓</b> Navigate
+                <b className="text-ink-600/60">↑ ↓</b> {t("Navigate")}
               </span>
               <span>
-                <b className="text-ink-600/60">Enter</b> Open
+                <b className="text-ink-600/60">Enter</b> {t("Open")}
               </span>
               <span>
-                <b className="text-ink-600/60">Esc</b> Close
+                <b className="text-ink-600/60">Esc</b> {t("Close")}
               </span>
             </div>
           </div>
@@ -13319,6 +13717,7 @@ const authWait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function Login() {
   const { user, login, isMock } = useAuth();
+  const { t } = useAdminPrefs();
   const systemSettings = useSystemSettings();
   const loginCompany =
     systemSettings?.company || DEFAULT_SYSTEM_SETTINGS.company;
@@ -13345,7 +13744,7 @@ function Login() {
     e.preventDefault();
     setError("");
     if (!email || !password) {
-      setError("Please enter your email and password.");
+      setError(t("Please enter your email and password."));
       return;
     }
     setSubmitting(true);
@@ -13356,7 +13755,7 @@ function Login() {
     if (error) {
       setSubmitting(false);
       setTransition(null);
-      setError(error.message || "Incorrect email or password.");
+      setError(error.message || t("Incorrect email or password."));
       return;
     }
     setTransition("success");
@@ -13367,15 +13766,18 @@ function Login() {
 
   return (
     <div className="cb-login-page min-h-screen relative overflow-hidden bg-[#f6f9fd] flex items-center justify-center px-5 py-8 sm:px-8">
+      <AdminLoginPrefs />
       {transition && (
         <AuthTransition
           phase={transition}
           icon={Waypoints}
-          title={transition === "success" ? "Welcome back!" : "Signing you in…"}
+          title={
+            transition === "success" ? t("Welcome back!") : t("Signing you in…")
+          }
           subtitle={
             transition === "success"
-              ? "Redirecting to your dashboard"
-              : "Preparing your workspace"
+              ? t("Redirecting to your dashboard")
+              : t("Preparing your workspace")
           }
         />
       )}
@@ -13447,10 +13849,10 @@ function Login() {
               {loginCompany.name || "Cargo Bridge"}
             </div>
             <h2 className="mt-5 font-display text-[26px] font-bold leading-tight text-ink-900">
-              Sign in
+              {t("Sign in")}
             </h2>
             <p className="mt-2 text-sm leading-6 text-ink-600/55">
-              Sign in to access your logistics management workspace.
+              {t("Sign in to access your logistics management workspace.")}
             </p>
           </div>
 
@@ -13467,7 +13869,7 @@ function Login() {
           <form onSubmit={handleSubmit} className="mt-7 space-y-5">
             <div>
               <label className="mb-2 block text-xs font-semibold text-ink-700">
-                Email
+                {t("Email")}
               </label>
               <input
                 type="email"
@@ -13481,16 +13883,16 @@ function Login() {
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <label className="block text-xs font-semibold text-ink-700">
-                  Password
+                  {t("Password")}
                 </label>
                 <button
                   type="button"
                   className="text-xs font-medium text-signal-blue transition-colors hover:text-blue-700"
                   onClick={() =>
-                    setError("Contact an Admin to reset your password.")
+                    setError(t("Contact an Admin to reset your password."))
                   }
                 >
-                  Forgot password?
+                  {t("Forgot password?")}
                 </button>
               </div>
               <div className="relative">
@@ -13520,7 +13922,7 @@ function Login() {
                 onChange={(e) => setRemember(e.target.checked)}
                 className="h-4 w-4 rounded border-mist-200 text-signal-blue focus:ring-signal-blue"
               />
-              Remember me
+              {t("Remember me")}
             </label>
 
             {error && (
@@ -13536,7 +13938,7 @@ function Login() {
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-signal-blue py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-500/20 transition-all hover:-translate-y-0.5 hover:bg-signal-blue/90 hover:shadow-blue-500/30 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
             >
               {submitting ? <AuthSpinner size={17} /> : null}
-              {submitting ? "Signing in..." : "Sign in"}
+              {submitting ? t("Signing in...") : t("Sign in")}
               {!submitting && <ArrowRight size={17} />}
             </button>
           </form>
@@ -38545,86 +38947,91 @@ function DeliveryPage() {
 
 function AdminApp() {
   return (
-    <PackageTrackingProvider>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Navigate to="/login" replace />} />
-        <Route
-          element={
-            <ProtectedRoute>
-              <Layout />
-            </ProtectedRoute>
-          }
-        >
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/orders/:id" element={<OrderDetail />} />
-          <Route path="/air-shipments" element={<AirShipmentsPage />} />
+    <AdminPrefsProvider>
+      <PackageTrackingProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Navigate to="/login" replace />} />
           <Route
-            path="/air-shipments/:id"
-            element={<AirShipmentDetailPage />}
-          />
-          <Route path="/packages/:tk" element={<PackageDetail />} />
-          <Route path="/containers" element={<ContainersPage />} />
-          <Route path="/containers/:id" element={<ContainerDetail />} />
-          <Route path="/shipment-lookup" element={<ShipmentLookup />} />
-          <Route path="/scan-center" element={<ScanCenterPage />} />
-          <Route path="/process-tracking" element={<ProcessTrackingPage />} />
-          <Route path="/exceptions" element={<ExceptionCenterPage />} />
-          <Route path="/wh-arrived" element={<WHArrivedPage />} />
-          <Route path="/delivery" element={<DeliveryPage />} />
-          <Route path="/sorting" element={<SortingPage />} />
-          <Route path="/warehouses" element={<WarehouseManagementPage />} />
-          <Route path="/kh-warehouse" element={<KhWarehousePage />} />
-          <Route path="/roles" element={<RoleManagementPage />} />
-          <Route path="/customer-features" element={<CustomerFeaturesPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/reports" element={<ReportsHubPage />} />
-          <Route path="/customers/:code" element={<CustomerDetailPage />} />
-          <Route path="/wallet-top-up" element={<WalletTopUpPage />} />
-          <Route path="/reports/:key" element={<ReportsPage />} />
-          <Route path="/notifications" element={<NotificationCenterPage />} />
-          <Route
-            path="/permissions"
-            element={<Navigate to="/roles" replace />}
-          />
-          {OTHER_ROUTES.filter(
-            (item) =>
-              ![
-                "/process-tracking",
-                "/exceptions",
-                "/wh-arrived",
-                "/sorting",
-                "/warehouses",
-                "/kh-warehouse",
-                "/containers",
-                "/roles",
-                "/customer-features",
-                "/settings",
-                "/wallet-top-up",
-                "/delivery",
-                "/shipments", // module removed — Container is the only grouping
-                "/air-shipments", // custom AIR module above
-                "/arrival", // hidden — Containers › Arrived Destination confirms arrival
-              ].includes(item.path),
-          ).map((item) => {
-            const config = MODULES[item.path];
-            return (
-              <Route
-                key={item.path}
-                path={item.path}
-                element={
-                  config ? (
-                    <ListPage {...config} path={item.path} />
-                  ) : (
-                    <Placeholder title={item.label} />
-                  )
-                }
-              />
-            );
-          })}
-        </Route>
-      </Routes>
-    </PackageTrackingProvider>
+            element={
+              <ProtectedRoute>
+                <Layout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/orders/:id" element={<OrderDetail />} />
+            <Route path="/air-shipments" element={<AirShipmentsPage />} />
+            <Route
+              path="/air-shipments/:id"
+              element={<AirShipmentDetailPage />}
+            />
+            <Route path="/packages/:tk" element={<PackageDetail />} />
+            <Route path="/containers" element={<ContainersPage />} />
+            <Route path="/containers/:id" element={<ContainerDetail />} />
+            <Route path="/shipment-lookup" element={<ShipmentLookup />} />
+            <Route path="/scan-center" element={<ScanCenterPage />} />
+            <Route path="/process-tracking" element={<ProcessTrackingPage />} />
+            <Route path="/exceptions" element={<ExceptionCenterPage />} />
+            <Route path="/wh-arrived" element={<WHArrivedPage />} />
+            <Route path="/delivery" element={<DeliveryPage />} />
+            <Route path="/sorting" element={<SortingPage />} />
+            <Route path="/warehouses" element={<WarehouseManagementPage />} />
+            <Route path="/kh-warehouse" element={<KhWarehousePage />} />
+            <Route path="/roles" element={<RoleManagementPage />} />
+            <Route
+              path="/customer-features"
+              element={<CustomerFeaturesPage />}
+            />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/reports" element={<ReportsHubPage />} />
+            <Route path="/customers/:code" element={<CustomerDetailPage />} />
+            <Route path="/wallet-top-up" element={<WalletTopUpPage />} />
+            <Route path="/reports/:key" element={<ReportsPage />} />
+            <Route path="/notifications" element={<NotificationCenterPage />} />
+            <Route
+              path="/permissions"
+              element={<Navigate to="/roles" replace />}
+            />
+            {OTHER_ROUTES.filter(
+              (item) =>
+                ![
+                  "/process-tracking",
+                  "/exceptions",
+                  "/wh-arrived",
+                  "/sorting",
+                  "/warehouses",
+                  "/kh-warehouse",
+                  "/containers",
+                  "/roles",
+                  "/customer-features",
+                  "/settings",
+                  "/wallet-top-up",
+                  "/delivery",
+                  "/shipments", // module removed — Container is the only grouping
+                  "/air-shipments", // custom AIR module above
+                  "/arrival", // hidden — Containers › Arrived Destination confirms arrival
+                ].includes(item.path),
+            ).map((item) => {
+              const config = MODULES[item.path];
+              return (
+                <Route
+                  key={item.path}
+                  path={item.path}
+                  element={
+                    config ? (
+                      <ListPage {...config} path={item.path} />
+                    ) : (
+                      <Placeholder title={item.label} />
+                    )
+                  }
+                />
+              );
+            })}
+          </Route>
+        </Routes>
+      </PackageTrackingProvider>
+    </AdminPrefsProvider>
   );
 }
 
