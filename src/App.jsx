@@ -22141,6 +22141,66 @@ const CustomerApp = (() => {
       fontFamily: "'Kantumruy Pro','Noto Sans Khmer',system-ui,sans-serif",
     },
   };
+
+  // Dark theme for the Customer Portal ONLY. Scoped to .cb-cust-dark so the
+  // Admin/Staff UI is never touched. It remaps the light Tailwind classes the
+  // customer pages already use, so no page needs to be rewritten.
+  const CUST_DARK_CSS = String.raw`
+.cb-cust-dark{background:#0b1120;color:#e2e8f0;min-height:100vh;color-scheme:dark}
+.cb-cust-dark .bg-white{background-color:#151c2c}
+.cb-cust-dark .bg-slate-50{background-color:#0b1120}
+.cb-cust-dark .bg-slate-100{background-color:#1e2638}
+.cb-cust-dark .bg-slate-200{background-color:#2a3347}
+.cb-cust-dark .bg-slate-900{background-color:#334155}
+.cb-cust-dark .active\:bg-slate-50:active{background-color:#1e2638}
+.cb-cust-dark .focus-within\:bg-white:focus-within{background-color:#0f1626}
+.cb-cust-dark .bg-gradient-to-r.from-blue-50{background-image:linear-gradient(to right,rgba(37,99,235,.18),#151c2c)}
+.cb-cust-dark .text-slate-900{color:#f1f5f9}
+.cb-cust-dark .text-slate-800{color:#e2e8f0}
+.cb-cust-dark .text-slate-700{color:#cbd5e1}
+.cb-cust-dark .text-slate-600{color:#a9b6c9}
+.cb-cust-dark .text-slate-500{color:#94a3b8}
+.cb-cust-dark .text-slate-400{color:#7385a0}
+.cb-cust-dark .text-slate-300{color:#4b5b73}
+.cb-cust-dark .hover\:text-slate-700:hover{color:#e2e8f0}
+.cb-cust-dark .hover\:text-slate-600:hover{color:#cbd5e1}
+.cb-cust-dark .border-slate-100{border-color:#1e2638}
+.cb-cust-dark .border-slate-200{border-color:#263043}
+.cb-cust-dark .border-slate-300{border-color:#334155}
+.cb-cust-dark .hover\:border-slate-300:hover{border-color:#3b4a63}
+.cb-cust-dark .divide-slate-100>:not([hidden])~:not([hidden]){border-color:#1e2638}
+.cb-cust-dark .bg-blue-50,.cb-cust-dark .hover\:bg-blue-50:hover,.cb-cust-dark .bg-violet-50{background-color:rgba(37,99,235,.16)}
+.cb-cust-dark .text-blue-500,.cb-cust-dark .text-blue-600{color:#60a5fa}
+.cb-cust-dark .text-blue-700{color:#93c5fd}
+.cb-cust-dark .hover\:text-blue-700:hover,.cb-cust-dark .hover\:text-blue-800:hover{color:#bfdbfe}
+.cb-cust-dark .border-blue-100{border-color:rgba(96,165,250,.25)}
+.cb-cust-dark .border-blue-200{border-color:rgba(96,165,250,.35)}
+.cb-cust-dark .bg-red-50,.cb-cust-dark .hover\:bg-red-50:hover{background-color:rgba(239,68,68,.14)}
+.cb-cust-dark .bg-red-100{background-color:rgba(239,68,68,.22)}
+.cb-cust-dark .text-red-500,.cb-cust-dark .text-red-600{color:#f87171}
+.cb-cust-dark .text-red-700{color:#fca5a5}
+.cb-cust-dark .border-red-100,.cb-cust-dark .border-red-200{border-color:rgba(248,113,113,.3)}
+.cb-cust-dark .bg-green-50,.cb-cust-dark .bg-emerald-50{background-color:rgba(34,197,94,.14)}
+.cb-cust-dark .text-green-600,.cb-cust-dark .text-green-700{color:#4ade80}
+.cb-cust-dark .text-emerald-600{color:#34d399}
+.cb-cust-dark .bg-amber-50{background-color:rgba(245,158,11,.14)}
+.cb-cust-dark .text-amber-700,.cb-cust-dark .text-amber-800{color:#fbbf24}
+.cb-cust-dark .bg-orange-50{background-color:rgba(249,115,22,.14)}
+.cb-cust-dark .text-orange-500,.cb-cust-dark .text-orange-600{color:#fb923c}
+.cb-cust-dark .text-violet-600{color:#a78bfa}
+.cb-cust-dark .cb-sk{background-color:#1e2638;background-image:linear-gradient(100deg,rgba(255,255,255,0) 30%,rgba(255,255,255,.07) 50%,rgba(255,255,255,0) 70%)}
+.cb-cust-dark .cb-field-input:-webkit-autofill,.cb-cust-dark .cb-field-input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px #0b1120 inset!important;-webkit-text-fill-color:#f1f5f9}
+/* Page headers: a deep navy gradient instead of the bright blue block, so they blend with the dark surface */
+.cb-cust-dark header.bg-blue-600{background:linear-gradient(165deg,#1b3366 0%,#13234a 55%,#0f1b38 100%);box-shadow:inset 0 -1px 0 rgba(96,165,250,.16),0 18px 36px -22px rgba(37,99,235,.55)}
+.cb-cust-dark header.bg-blue-600 .bg-white\/15{background-color:rgba(255,255,255,.09)}
+.cb-cust-dark header.bg-blue-600 .bg-white{box-shadow:inset 0 0 0 1px rgba(148,163,184,.14)}
+/* Login hero */
+.cb-cust-dark .bg-gradient-to-br.from-blue-700.via-blue-600{background-image:linear-gradient(150deg,#16295a 0%,#1e3a8a 55%,#1d4ed8 100%)}
+/* Wallet balance card */
+.cb-cust-dark .bg-gradient-to-br.from-blue-600.to-blue-700{background-image:linear-gradient(135deg,#1e40af 0%,#172554 100%)}
+/* Cards: hairline border so they separate from the dark page */
+.cb-cust-dark .bg-white.rounded-2xl{box-shadow:inset 0 0 0 1px rgba(148,163,184,.10)}
+`;
   const LANG_KEY = "cb_cust_lang";
   const readLang = () => {
     try {
@@ -22150,6 +22210,20 @@ const CustomerApp = (() => {
       return "km";
     }
   };
+  // Appearance: "light" (default) | "dark" | "system" (follow the device)
+  const THEME_KEY = "cb_cust_theme";
+  const readTheme = () => {
+    try {
+      const v = localStorage.getItem(THEME_KEY);
+      return v === "light" || v === "dark" || v === "system" ? v : "light";
+    } catch {
+      return "light";
+    }
+  };
+  const systemPrefersDark = () =>
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : false;
   let CUR_LANG = readLang(); // read by fmtDate / fmtDateTime
   const dateLoc = () => (CUR_LANG === "km" ? "km-KH-u-nu-latn" : "en-GB");
 
@@ -22325,6 +22399,37 @@ const CustomerApp = (() => {
         localStorage.setItem(LANG_KEY, l);
       } catch {}
     };
+    // ---- Appearance (light / dark / follow device) ----
+    const [theme, setThemeState] = useState(readTheme);
+    const [sysDark, setSysDark] = useState(systemPrefersDark);
+    useEffect(() => {
+      if (typeof window === "undefined" || !window.matchMedia) return;
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      const onChange = (e) => setSysDark(e.matches);
+      if (mq.addEventListener) mq.addEventListener("change", onChange);
+      else mq.addListener(onChange);
+      return () => {
+        if (mq.removeEventListener) mq.removeEventListener("change", onChange);
+        else mq.removeListener(onChange);
+      };
+    }, []);
+    const dark = theme === "dark" || (theme === "system" && sysDark);
+    const setTheme = (t) => {
+      setThemeState(t);
+      try {
+        localStorage.setItem(THEME_KEY, t);
+      } catch {}
+    };
+    // Paint the page behind the portal too (overscroll / wide screens), and
+    // restore it when leaving the portal so Admin/Staff are unaffected.
+    useEffect(() => {
+      if (!dark) return;
+      const prev = document.body.style.backgroundColor;
+      document.body.style.backgroundColor = "#0b1120";
+      return () => {
+        document.body.style.backgroundColor = prev;
+      };
+    }, [dark]);
     // tr(english, khmer) → the text for the active language (never mixed)
     const tr = (en, km) => (lang === "km" ? km : en);
     const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
@@ -22853,6 +22958,9 @@ const CustomerApp = (() => {
     const v = {
       lang,
       setLang,
+      theme,
+      setTheme,
+      dark,
       tr,
       me,
       say,
@@ -22882,10 +22990,11 @@ const CustomerApp = (() => {
       <Ctx.Provider value={v}>
         <div
           lang={lang}
-          className={lang === "km" ? "cb-km" : "cb-en"}
+          className={`${lang === "km" ? "cb-km" : "cb-en"}${dark ? " cb-cust-dark" : ""}`}
           style={FONTS[lang]}
         >
           <style>{`.cb-km *{line-height:1.6 !important}.cb-km input,.cb-km select{line-height:normal !important}`}</style>
+          {dark && <style>{CUST_DARK_CSS}</style>}
           {children}
         </div>
       </Ctx.Provider>
@@ -23054,6 +23163,58 @@ const CustomerApp = (() => {
               {lang === k && <Check size={18} />}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full h-12 text-slate-500 font-semibold"
+          >
+            {tr("Cancel", "បោះបង់")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  // ---------- Appearance (theme) sheet ----------
+  function ThemeSheet({ onClose }) {
+    const { theme, setTheme, tr } = useApp();
+    const opts = [
+      ["light", tr("Light theme", "ពណ៌ភ្លឺ"), Icons.Sun],
+      ["dark", tr("Dark theme", "ពណ៌ងងឹត"), Icons.Moon],
+      ["system", tr("Use device theme", "ប្រើតាមឧបករណ៍"), Icons.Smartphone],
+    ];
+    return (
+      <div
+        className="fixed inset-0 bg-slate-900/50 z-[70] flex items-end justify-center text-slate-900"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="cb-fade-in bg-white w-full max-w-md rounded-t-3xl p-5 space-y-3"
+          style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+        >
+          <h2 className="font-bold text-lg">{tr("Appearance", "រូបរាង")}</h2>
+          {opts.map(([k, name, I]) => {
+            const on = theme === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => {
+                  setTheme(k);
+                  onClose();
+                }}
+                className={`w-full h-14 rounded-2xl flex items-center gap-3 px-4 font-semibold border transition-colors ${on ? "bg-blue-600 text-white border-blue-600 shadow-[0_8px_20px_-8px_rgba(37,99,235,.65)]" : "bg-slate-50 text-slate-800 border-slate-200"}`}
+              >
+                <I size={18} className={on ? "text-white" : "text-slate-400"} />
+                <span className="flex-1 text-left">{name}</span>
+                <span
+                  className={`w-6 h-6 rounded-full grid place-items-center ${on ? "bg-white text-blue-600" : "border border-slate-300"}`}
+                >
+                  {on && <Check size={14} strokeWidth={3} />}
+                </span>
+              </button>
+            );
+          })}
           <button
             type="button"
             onClick={onClose}
@@ -25169,9 +25330,10 @@ const CustomerApp = (() => {
 
   // ---------- Profile ----------
   function Profile() {
-    const { me, addrs, logout, tr, lang } = useApp();
+    const { me, addrs, logout, tr, lang, theme } = useApp();
     const nav = useNavigate();
     const [langOpen, setLangOpen] = useState(false);
+    const [themeOpen, setThemeOpen] = useState(false);
     const def = addrs.find((a) => a.def);
     const feat = useCustomerFeatures();
     const info = [
@@ -25250,7 +25412,7 @@ const CustomerApp = (() => {
               </button>
             ))}
           </Card>
-          <Card>
+          <Card className="divide-y divide-slate-100">
             <button
               type="button"
               onClick={() => setLangOpen(true)}
@@ -25265,8 +25427,27 @@ const CustomerApp = (() => {
               </span>
               <ChevronRight size={16} className="text-slate-300" />
             </button>
+            <button
+              type="button"
+              onClick={() => setThemeOpen(true)}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-sm font-medium"
+            >
+              <Icons.Palette size={18} className="text-blue-600" />
+              <span className="flex-1 text-left">
+                {tr("Appearance", "រូបរាង")}
+              </span>
+              <span className="text-slate-400 text-[13px]">
+                {theme === "dark"
+                  ? tr("Dark", "ងងឹត")
+                  : theme === "system"
+                    ? tr("Device", "តាមឧបករណ៍")
+                    : tr("Light", "ភ្លឺ")}
+              </span>
+              <ChevronRight size={16} className="text-slate-300" />
+            </button>
           </Card>
           {langOpen && <LangSheet onClose={() => setLangOpen(false)} />}
+          {themeOpen && <ThemeSheet onClose={() => setThemeOpen(false)} />}
           <Btn danger onClick={logout}>
             <LogOut size={18} />
             {tr("Log Out", "ចាកចេញ")}
