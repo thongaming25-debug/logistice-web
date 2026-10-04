@@ -994,6 +994,7 @@ const PERMISSION_GROUPS = [
     label: "Customers",
     perms: [
       ...crudPerms("customer", "Customer"),
+      ["customer.reset_password", "Reset Customer Password"],
       ...crudPerms("customer_account", "Customer Account"),
       ...crudPerms("customer_address", "Customer Address"),
       ["customer_transfer.view", "View Customer ID Transfer"],
@@ -1199,6 +1200,7 @@ function seedRoles() {
         "container.receive",
         "customer.create",
         "customer.edit",
+        "customer.reset_password",
         "order.edit",
         "order.change_branch",
         "air_order.view",
@@ -11780,6 +11782,195 @@ function RowEditModal({ row, columns, onSave, onClose }) {
   );
 }
 
+// ------------------------------------------------------------
+// Reset a customer's password (admin). Customers sign in with phone +
+// password, so a forgotten password is fixed by setting a new one for them.
+// Needs the "reset-customer-password" Edge Function (service_role key stays
+// server-side) — see supabase/functions/reset-customer-password.
+// ------------------------------------------------------------
+// Must match the Edge Function name (slug) shown in Supabase → Edge Functions.
+const RESET_PASSWORD_FUNCTION = "customer-reset_password-ts";
+
+function generateTempPassword(len = 8) {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+  const buf = new Uint32Array(len);
+  window.crypto.getRandomValues(buf);
+  return Array.from(buf, (n) => chars[n % chars.length]).join("");
+}
+
+function CustomerResetPasswordModal({ row, onClose }) {
+  const [pw, setPw] = useState(() => generateTempPassword());
+  const [show, setShow] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const [copied, setCopied] = useState(false);
+  if (!row) return null;
+
+  async function submit(e) {
+    e.preventDefault();
+    if (busy) return;
+    if (pw.length < 6) return setError("Password ត្រូវមានយ៉ាងតិច 6 តួអក្សរ");
+    setBusy(true);
+    setError("");
+    try {
+      if (!supabase) throw new Error("Supabase មិនទាន់តភ្ជាប់");
+      const { data: session } = await supabase.auth.getSession();
+      const { data, error: fnError } = await supabase.functions.invoke(
+        RESET_PASSWORD_FUNCTION,
+        {
+          body: { customer_code: row.id, new_password: pw },
+          headers: {
+            Authorization: `Bearer ${session.session?.access_token}`,
+          },
+        },
+      );
+      if (fnError) throw fnError;
+      if (data?.error) throw new Error(data.error);
+      setDone(true);
+      emitCBToast(
+        "ok",
+        "Password reset",
+        `${row.name || row.id} អាចចូលប្រើដោយ Password ថ្មីបានភ្លាម។`,
+      );
+    } catch (err) {
+      const msg = err?.message || "មិនអាច Reset Password បានទេ";
+      setError(msg);
+      emitCBToast("err", "Reset failed", msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyPw() {
+    try {
+      await navigator.clipboard.writeText(pw);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {}
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 grid place-items-center">
+              <Icons.KeyRound size={18} />
+            </span>
+            <div>
+              <h3 className="font-bold text-lg text-slate-900">
+                Reset Password
+              </h3>
+              <p className="text-xs text-slate-500">
+                {row.id} · {row.name}
+                {row.phone ? ` · ${row.phone}` : ""}
+              </p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          {done ? (
+            <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-4 space-y-2">
+              <p className="text-sm font-semibold text-emerald-800">
+                Reset បានជោគជ័យ — សូមផ្តល់ Password ថ្មីនេះទៅអតិថិជន
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="flex-1 rounded-lg bg-white border border-emerald-200 px-3 py-2 text-base font-bold tracking-wider text-slate-900 select-all">
+                  {pw}
+                </code>
+                <button
+                  type="button"
+                  onClick={copyPw}
+                  className="h-10 px-3 rounded-xl border border-emerald-200 bg-white text-sm font-semibold text-emerald-700"
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <p className="text-xs text-emerald-700/80">
+                Password នេះនឹងមិនបង្ហាញម្តងទៀតទេ បន្ទាប់ពីបិទផ្ទាំងនេះ។
+              </p>
+            </div>
+          ) : (
+            <>
+              <label className="block">
+                <span className="text-xs font-semibold text-slate-500">
+                  New Password
+                </span>
+                <div className="mt-1 flex items-center gap-2">
+                  <input
+                    autoFocus
+                    type={show ? "text" : "password"}
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                    className={`${INPUT_CLS} flex-1 font-mono`}
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShow((v) => !v)}
+                    className="h-10 w-10 rounded-xl border border-slate-200 grid place-items-center text-slate-500"
+                    aria-label="Show / hide password"
+                  >
+                    {show ? (
+                      <Icons.EyeOff size={16} />
+                    ) : (
+                      <Icons.Eye size={16} />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPw(generateTempPassword())}
+                    className="h-10 px-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 whitespace-nowrap"
+                  >
+                    Generate
+                  </button>
+                </div>
+              </label>
+              <p className="text-xs text-slate-500">
+                អតិថិជននឹងចូលប្រើដោយលេខទូរស័ព្ទ និង Password ថ្មីនេះភ្លាមៗ ហើយ
+                Password ចាស់លែងប្រើបាន។
+              </p>
+            </>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            {done ? "Close" : "Cancel"}
+          </button>
+          {!done && (
+            <button
+              disabled={busy}
+              className="h-10 px-5 rounded-xl bg-amber-600 text-white text-sm font-bold disabled:opacity-50"
+            >
+              {busy ? "Resetting…" : "Reset Password"}
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function RowDeleteModal({ label, onConfirm, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -12204,6 +12395,9 @@ function ListPage({
   const canDeleteRows = hasPermission(user, PATH_ACTIONS[path]?.delete);
   const [editingRow, setEditingRow] = useState(null);
   const [deletingRow, setDeletingRow] = useState(null);
+  const [resetPwRow, setResetPwRow] = useState(null);
+  const canResetPassword =
+    path === "/customers" && hasPermission(user, "customer.reset_password");
   const isUsersModule = path === "/users";
   const isTransferModule = path === "/customer-transfer";
   // Exceptions has no mock table of its own — it's just whichever real
@@ -12579,11 +12773,21 @@ function ListPage({
           loading={listLoading}
           skeletonRows={8}
           rowActions={
-            (canEditRows || canDeleteRows) &&
+            (canEditRows || canDeleteRows || canResetPassword) &&
             !isExceptionsModule &&
             !isTransferModule
               ? (row) => (
                   <div className="inline-flex items-center gap-1">
+                    {canResetPassword && (
+                      <button
+                        type="button"
+                        title="Reset Password"
+                        onClick={() => setResetPwRow(row)}
+                        className="p-1.5 rounded-md text-ink-600/50 hover:text-amber-600 hover:bg-amber-50"
+                      >
+                        <Icons.KeyRound size={14} />
+                      </button>
+                    )}
                     {canEditRows &&
                       (isLinkedTk ? (
                         <Link
@@ -12618,6 +12822,13 @@ function ListPage({
               : undefined
           }
         />
+        {canResetPassword && resetPwRow && (
+          <CustomerResetPasswordModal
+            key={resetPwRow.id}
+            row={resetPwRow}
+            onClose={() => setResetPwRow(null)}
+          />
+        )}
         {canEditRows && editingRow && (
           <RowEditModal
             key={editingRow.id ?? "row"}
@@ -21492,6 +21703,36 @@ const CustomerApp = (() => {
     } catch {}
   };
 
+  // ---------- Customer notifications ----------
+  // Built from the status history that already exists (China timeline + AIR
+  // history), so every status change shows up without a separate table.
+  const CN_NOTIF = {
+    Inbound: "ទំនិញចូលឃ្លាំងចិនហើយ",
+    Outbound: "ទំនិញចេញពីឃ្លាំងចិនហើយ",
+    Arrived: "ទំនិញមកដល់កម្ពុជាហើយ",
+    "Shipping to Branch": "ទំនិញកំពុងដឹកទៅសាខា",
+    "Inbound Warehouse": "ទំនិញចូលឃ្លាំងសាខា · ត្រៀមយក",
+    Complete: "ការដឹកជញ្ជូនបានបញ្ចប់",
+  };
+  const AIR_NOTIF = {
+    "Order Processing": "AIR Order កំពុងដំណើរការ",
+    "In Transit": "AIR ទំនិញកំពុងដឹកជញ្ជូន",
+    "Received at Indonesia Warehouse": "ទំនិញចូលឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
+    "Departed Indonesia Warehouse": "ទំនិញចេញពីឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
+    "Received at Cambodia Warehouse": "ទំនិញចូលឃ្លាំងកម្ពុជាហើយ",
+    "Complete Order": "AIR Order បានបញ្ចប់",
+    "Refund Order": "AIR Order ត្រូវបាន Refund",
+  };
+  const fmtDateTime = (iso) =>
+    iso
+      ? new Date(iso).toLocaleString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "";
+
   function Provider({ children }) {
     const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
     const [me, setMe] = useState(null);
@@ -21784,6 +22025,136 @@ const CustomerApp = (() => {
       emitCBToast("ok", "បានកំណត់ជាអាសយដ្ឋានលំនាំដើម");
     };
 
+    // ----- Notifications -----
+    const [notifs, setNotifs] = useState([]);
+    const [seenAt, setSeenAt] = useState(0);
+    const seenKey = me?.id ? `cb_cust_notif_seen_${me.id}` : null;
+    const latestNotifRef = useRef(0);
+    useEffect(() => {
+      if (!seenKey) return;
+      try {
+        setSeenAt(Number(localStorage.getItem(seenKey)) || 0);
+      } catch {}
+    }, [seenKey]);
+    useEffect(() => {
+      let alive = true;
+      (async () => {
+        const events = [];
+        if (supabase && ships.length) {
+          const mine = new Set(ships.map((x) => x.tk));
+          const { data } = await supabase
+            .from("customer_package_timeline")
+            .select("tk, status, reached_at");
+          (data || [])
+            .filter((r) => r.reached_at && mine.has(r.tk) && CN_NOTIF[r.status])
+            .forEach((r) =>
+              events.push({
+                id: `cn-${r.tk}-${r.status}`,
+                kind: "china",
+                to: P(`/shipments/${encodeURIComponent(r.tk)}`),
+                title: CN_NOTIF[r.status],
+                text: `TK ${r.tk}`,
+                at: r.reached_at,
+              }),
+            );
+        }
+        // Packages with no timeline rows (or no access to them): fall back to
+        // the package's current status so the list is never empty.
+        const stepKeys = Object.keys(STEP_OF_STATUS);
+        ships.forEach((x) => {
+          if (x.step < 0 || events.some((e) => e.id.startsWith(`cn-${x.tk}-`)))
+            return;
+          const key = stepKeys[x.step];
+          if (!CN_NOTIF[key]) return;
+          events.push({
+            id: `cn-${x.tk}-${key}`,
+            kind: "china",
+            to: P(`/shipments/${encodeURIComponent(x.tk)}`),
+            title: CN_NOTIF[key],
+            text: `TK ${x.tk}`,
+            at: x.createdAt,
+          });
+        });
+        if (airShips.length) {
+          const byId = Object.fromEntries(airShips.map((a) => [a.id, a]));
+          let hist = [];
+          if (supabase) {
+            const { data } = await supabase
+              .from("air_order_history")
+              .select("air_order_id, status, created_at, note")
+              .in(
+                "air_order_id",
+                airShips.map((a) => a.id),
+              );
+            hist = data || [];
+          }
+          const covered = new Set();
+          hist.forEach((h) => {
+            const o = byId[h.air_order_id];
+            const st = canonicalAirStatus(h.status);
+            if (!o || !h.created_at || !AIR_NOTIF[st]) return;
+            covered.add(o.id);
+            const refund = st === AIR_ORDER_TERMINAL && h.note;
+            events.push({
+              id: `air-${o.id}-${st}-${h.created_at}`,
+              kind: "air",
+              to: P(`/air-shipments/${encodeURIComponent(o.order_id)}`),
+              title: AIR_NOTIF[st],
+              text: `${o.order_id}${o.tk ? ` · TK ${o.tk}` : ""}${refund ? ` · មូលហេតុ: ${h.note}` : ""}`,
+              at: h.created_at,
+            });
+          });
+          // Orders with no history rows: fall back to their current status.
+          airShips.forEach((o) => {
+            const st = canonicalAirStatus(o.status);
+            if (covered.has(o.id) || !AIR_NOTIF[st]) return;
+            events.push({
+              id: `air-${o.id}-${st}`,
+              kind: "air",
+              to: P(`/air-shipments/${encodeURIComponent(o.order_id)}`),
+              title: AIR_NOTIF[st],
+              text: `${o.order_id}${o.tk ? ` · TK ${o.tk}` : ""}`,
+              at: o.updated_at || o.created_at,
+            });
+          });
+        }
+        events.sort((a, b) => new Date(b.at) - new Date(a.at));
+        if (!alive) return;
+        const list = events.slice(0, 100);
+        const newest = list[0] ? new Date(list[0].at).getTime() : 0;
+        // A new status arrived while the app is open → small heads-up toast.
+        if (latestNotifRef.current && newest > latestNotifRef.current)
+          say(`🔔 ${list[0].title}`);
+        if (newest) latestNotifRef.current = newest;
+        setNotifs(list);
+      })();
+      return () => {
+        alive = false;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ships, airShips]);
+    // Pick up new statuses without a manual refresh (every minute).
+    useEffect(() => {
+      if (!supabase || !session) return undefined;
+      const t = setInterval(() => {
+        loadShips();
+        loadAirShips();
+      }, 60000);
+      return () => clearInterval(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [session]);
+    const unread = notifs.filter(
+      (n) => new Date(n.at).getTime() > seenAt,
+    ).length;
+    const markAllRead = () => {
+      const now = Date.now();
+      setSeenAt(now);
+      if (seenKey)
+        try {
+          localStorage.setItem(seenKey, String(now));
+        } catch {}
+    };
+
     const v = {
       me,
       say,
@@ -21794,6 +22165,10 @@ const CustomerApp = (() => {
       logout,
       ships,
       airShips,
+      notifs,
+      unread,
+      seenAt,
+      markAllRead,
       wallet,
       refreshMoney,
       payShipping,
@@ -22173,7 +22548,7 @@ const CustomerApp = (() => {
 
   // ---------- Home ----------
   function HomePage() {
-    const { me, ships, wallet } = useApp();
+    const { me, ships, wallet, unread } = useApp();
     const nav = useNavigate();
     const [q, setQ] = useState("");
     const owed = ships.filter(
@@ -22222,9 +22597,19 @@ const CustomerApp = (() => {
               <h1 className="text-xl font-bold">Hello {me.name} 👋</h1>
               <p className="text-blue-100 text-sm">Welcome to Brathna</p>
             </div>
-            <span className="w-10 h-10 grid place-items-center rounded-full bg-white/15">
+            <button
+              type="button"
+              aria-label="Notifications"
+              onClick={() => nav(P("/notifications"))}
+              className="relative w-10 h-10 grid place-items-center rounded-full bg-white/15"
+            >
               <Bell size={20} />
-            </span>
+              {unread > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold grid place-items-center">
+                  {unread > 9 ? "9+" : unread}
+                </span>
+              )}
+            </button>
           </div>
           <div className="mt-4 flex items-center gap-2 h-12 bg-white rounded-xl px-3.5 text-slate-900">
             <Search size={18} className="text-slate-400" />
@@ -22432,6 +22817,21 @@ const CustomerApp = (() => {
   // ---------- AIR Shipments (customer: separate menu) ----------
   function CustomerAirShipments() {
     const { airShips, loading } = useApp();
+    const [t, setT] = useState("All");
+    // Filter tabs → the AIR status each one shows (null = everything).
+    const tabs = {
+      All: null,
+      Processing: "Order Processing",
+      "In Transit": "In Transit",
+      "Received at Indonesia Warehouse": "Received at Indonesia Warehouse",
+      "Departed Indonesia Warehouse": "Departed Indonesia Warehouse",
+      "Received at Cambodia Warehouse": "Received at Cambodia Warehouse",
+      "Complete Order": "Complete Order",
+      Refund: AIR_ORDER_TERMINAL,
+    };
+    const list = airShips.filter(
+      (s) => !tabs[t] || canonicalAirStatus(s.status) === tabs[t],
+    );
     if (loading)
       return (
         <>
@@ -22457,11 +22857,101 @@ const CustomerApp = (() => {
               </div>
             </div>
           </div>
-          {airShips.length ? (
-            airShips.map((s) => <AirRow key={s.id || s.order_id} s={s} />)
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {Object.keys(tabs).map((k) => (
+              <button
+                key={k}
+                onClick={() => setT(k)}
+                className={`px-4 h-9 rounded-full text-[13px] font-semibold whitespace-nowrap shrink-0 ${t === k ? "bg-blue-600 text-white" : "bg-white text-slate-600"}`}
+              >
+                {k}
+              </button>
+            ))}
+          </div>
+          {list.length ? (
+            list.map((s) => <AirRow key={s.id || s.order_id} s={s} />)
           ) : (
             <div className="text-center py-16 text-sm text-slate-400">
-              No AIR shipments yet.
+              {airShips.length
+                ? "No AIR shipments in this status."
+                : "No AIR shipments yet."}
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  // ---------- Notifications (customer) ----------
+  function CustomerNotifications() {
+    const { notifs, seenAt, markAllRead, unread, loading } = useApp();
+    const nav = useNavigate();
+    // Keep the "new" highlight while the page is open; mark read on leave.
+    const [seenOnOpen] = useState(seenAt);
+    useEffect(() => {
+      const t = setTimeout(markAllRead, 1500);
+      return () => clearTimeout(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [notifs.length]);
+    return (
+      <>
+        <Top
+          title="Notifications"
+          back
+          right={
+            unread > 0 ? (
+              <button
+                onClick={markAllRead}
+                className="text-xs font-semibold px-3 h-8 rounded-full bg-white/15"
+              >
+                Mark all read
+              </button>
+            ) : null
+          }
+        />
+        <div className="px-4 pt-4 space-y-2.5">
+          {loading ? (
+            <CustomerAirSkeleton />
+          ) : notifs.length ? (
+            notifs.map((n) => {
+              const fresh = new Date(n.at).getTime() > seenOnOpen;
+              const IconC = n.kind === "air" ? Icons.Plane : Package;
+              return (
+                <Card
+                  key={n.id}
+                  onClick={() => nav(n.to)}
+                  className={`p-3.5 flex items-start gap-3 cursor-pointer ${fresh ? "border border-blue-100 bg-blue-50/40" : ""}`}
+                >
+                  <Icon
+                    i={IconC}
+                    c={
+                      n.kind === "air"
+                        ? "bg-blue-50 text-blue-600"
+                        : "bg-emerald-50 text-emerald-600"
+                    }
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-[14px] text-slate-900 leading-snug">
+                      {n.title}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5 break-words">
+                      {n.text}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {n.kind === "air" ? "AIR · " : "China · "}
+                      {fmtDateTime(n.at)}
+                    </p>
+                  </div>
+                  {fresh && (
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-600 mt-1.5 shrink-0" />
+                  )}
+                </Card>
+              );
+            })
+          ) : (
+            <div className="text-center py-20 text-sm text-slate-400">
+              <Bell size={32} className="mx-auto mb-3 text-slate-300" />
+              មិនទាន់មានការជូនដំណឹងនៅឡើយទេ
             </div>
           )}
         </div>
@@ -23425,6 +23915,7 @@ const CustomerApp = (() => {
             <Route index element={<HomePage />} />
             <Route path="shipments" element={<Shipments />} />
             <Route path="shipments/:tk" element={<Detail />} />
+            <Route path="notifications" element={<CustomerNotifications />} />
             <Route path="air-shipments" element={<CustomerAirShipments />} />
             <Route path="air-shipments/:orderId" element={<AirDetail />} />
             <Route path="warehouse" element={<ChinaWH />} />
