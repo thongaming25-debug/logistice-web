@@ -818,6 +818,11 @@ const NAV_SECTIONS = [
         icon: "ArrowLeftRight",
         path: "/customer-transfer",
       },
+      {
+        label: "Customer Features",
+        icon: "ToggleRight",
+        path: "/customer-features",
+      },
     ],
   },
   {
@@ -1093,6 +1098,7 @@ const PATH_VIEW = {
   "/wallet-top-up": "payment.manage",
   "/users": "user.view",
   "/roles": "role.view",
+  "/customer-features": "role.view",
   "/permissions": "role.view",
   "/status-master": "status_master.view",
   "/audit-logs": "audit.view",
@@ -11827,6 +11833,18 @@ function CustomerResetPasswordModal({ row, onClose }) {
       );
       if (fnError) throw fnError;
       if (data?.error) throw new Error(data.error);
+      // Force the customer to choose their OWN password on next login, so the
+      // temporary password staff just saw becomes useless.
+      const { error: flagErr } = await supabase
+        .from("customers")
+        .update({ must_change_password: true })
+        .eq("customer_code", row.id);
+      if (flagErr)
+        emitCBToast(
+          "warn",
+          "Reset OK, but customer is not forced to change it",
+          "Run: alter table customers add column if not exists must_change_password boolean not null default false;",
+        );
       setDone(true);
       emitCBToast(
         "ok",
@@ -11904,6 +11922,10 @@ function CustomerResetPasswordModal({ row, onClose }) {
               </div>
               <p className="text-xs text-emerald-700/80">
                 Password នេះនឹងមិនបង្ហាញម្តងទៀតទេ បន្ទាប់ពីបិទផ្ទាំងនេះ។
+              </p>
+              <p className="text-xs text-emerald-700/80">
+                ពេលភ្ញៀវ login ដំបូង app នឹងបង្ខំឱ្យគាត់ប្តូរទៅ Password
+                ផ្ទាល់ខ្លួន ដូច្នេះ staff នឹងលែងដឹង Password របស់គាត់។
               </p>
             </div>
           ) : (
@@ -21595,6 +21617,346 @@ function ContainerDetailInner() {
 // Wrapped in an IIFE so its helper names (Card, Btn, Field, Row, Auth,
 // Shell, Profile ...) can never collide with the admin code above.
 // Uses only imports already at the top of this file.
+// ------------------------------------------------------------
+// lib/customerFeatures.js — Customer Portal roles & feature permissions
+// ------------------------------------------------------------
+// Same idea as staff Role Permission, but for the customer app:
+//
+//   Customer ──► Customer Role ──► Feature permissions
+//
+// Customers › Customer Features (Super Admin) shows a matrix:
+//   • "Master" column  = switch a feature OFF for EVERY customer
+//   • one column per Customer Role (Standard, VIP, ...) = who may use it
+// A feature is available only when Master is ON *and* the customer's role
+// allows it. Hidden features disappear from the app and their routes
+// redirect to Home. Everything is ON by default; new features added to the
+// catalog later are ON for existing roles (roles store the DENIED list).
+//
+// SQL — run once in the Supabase SQL editor. Without it the settings are
+// saved in THIS browser only (the admin page warns you):
+//
+//   create table if not exists customer_features (
+//     key text primary key,
+//     enabled boolean not null default true,
+//     updated_at timestamptz default now()
+//   );
+//   create table if not exists customer_roles (
+//     name text primary key,
+//     description text,
+//     is_system boolean default false,
+//     denied_features text[] not null default '{}',
+//     updated_at timestamptz default now()
+//   );
+//   alter table customers add column if not exists customer_role text default 'Standard';
+//   -- Forced password change after a staff reset:
+//   alter table customers add column if not exists must_change_password boolean not null default false;
+//   create or replace function clear_must_change_password() returns void
+//     language sql security definer set search_path = public as
+//     $$ update customers set must_change_password = false where auth_user_id = auth.uid(); $$;
+//   grant execute on function clear_must_change_password() to authenticated;
+//   alter table customer_features enable row level security;
+//   alter table customer_roles enable row level security;
+//   create policy "customer_features read" on customer_features
+//     for select to authenticated using (true);
+//   create policy "customer_roles read" on customer_roles
+//     for select to authenticated using (true);
+//   create policy "customer_features write" on customer_features
+//     for all to authenticated
+//     using (exists (select 1 from users u
+//            where u.auth_user_id = auth.uid() and u.role = 'Super Admin'))
+//     with check (exists (select 1 from users u
+//            where u.auth_user_id = auth.uid() and u.role = 'Super Admin'));
+//   create policy "customer_roles write" on customer_roles
+//     for all to authenticated
+//     using (exists (select 1 from users u
+//            where u.auth_user_id = auth.uid() and u.role = 'Super Admin'))
+//     with check (exists (select 1 from users u
+//            where u.auth_user_id = auth.uid() and u.role = 'Super Admin'));
+//
+// NOTE: this hides features in the UI. It does not replace RLS on the
+// underlying tables (wallet, addresses, ...). Also make sure customers
+// cannot UPDATE their own `customer_role` column (RLS / trigger).
+const CUSTOMER_FEATURES_KEY = "cargo_bridge_customer_features_v1";
+const CUSTOMER_ROLES_KEY = "cargo_bridge_customer_roles_v1";
+const DEFAULT_CUSTOMER_ROLE = "Standard";
+const CUSTOMER_FEATURES = [
+  {
+    group: "Core (always on)",
+    key: "core_home",
+    label: "Home / Dashboard",
+    kh: "ទំព័រដើម",
+    desc: "Greeting, summary and entry point of the app.",
+    locked: true,
+  },
+  {
+    group: "Core (always on)",
+    key: "core_profile",
+    label: "Profile & Log out",
+    kh: "ប្រវត្តិរូប",
+    desc: "Customer info and sign-out. Kept on so nobody gets locked out.",
+    locked: true,
+  },
+  {
+    group: "Bottom navigation",
+    key: "tab_shipments",
+    label: "Shipments (Sea / Land)",
+    kh: "ទំនិញ Sea/Land",
+    desc: "Shipments tab, detail page and the Sea/Land rows on Home.",
+  },
+  {
+    group: "Bottom navigation",
+    key: "tab_air",
+    label: "AIR Shipments",
+    kh: "ទំនិញ AIR",
+    desc: "AIR tab, AIR detail and the AIR rows on Home.",
+  },
+  {
+    group: "Bottom navigation",
+    key: "tab_address",
+    label: "My Addresses",
+    kh: "អាសយដ្ឋាន",
+    desc: "Address tab where customers manage delivery addresses.",
+  },
+  {
+    group: "Home dashboard",
+    key: "home_search",
+    label: "Search box",
+    kh: "ប្រអប់ស្វែងរក",
+    desc: "Search by tracking number / order ID on Home.",
+  },
+  {
+    group: "Home dashboard",
+    key: "home_stats",
+    label: "Summary cards",
+    kh: "ប្រអប់ស្ថិតិ",
+    desc: "Total / In Transit / Arrived / Ready for Pickup / Completed.",
+  },
+  {
+    group: "Home dashboard",
+    key: "home_pay_alert",
+    label: "Payment due alert",
+    kh: "ជូនដំណឹងត្រូវបង់ប្រាក់",
+    desc: "Red card shown when shipments are waiting for payment.",
+  },
+  {
+    group: "Home dashboard",
+    key: "home_recent",
+    label: "Recent Shipments list",
+    kh: "ទំនិញថ្មីៗ",
+    desc: "Latest shipments list at the bottom of Home.",
+  },
+  {
+    group: "Wallet & Payment",
+    key: "wallet",
+    label: "My Wallet",
+    kh: "កាបូបលុយ",
+    desc: "Wallet card on Home, Wallet page and the Profile link.",
+  },
+  {
+    group: "Wallet & Payment",
+    key: "pay_shipping",
+    label: "Pay shipping from wallet",
+    kh: "បង់ថ្លៃដឹកពីកាបូប",
+    desc: "Shipping Payment card / Pay button on a shipment detail page.",
+  },
+  {
+    group: "Warehouse & Notifications",
+    key: "warehouse",
+    label: "My China Warehouse",
+    kh: "ឃ្លាំងចិន",
+    desc: "Warehouse address card on Home, page and the Profile link.",
+  },
+  {
+    group: "Warehouse & Notifications",
+    key: "notifications",
+    label: "Notifications",
+    kh: "ការជូនដំណឹង",
+    desc: "Bell icon on Home and the Notifications page.",
+  },
+  {
+    group: "Profile menu",
+    key: "profile_password",
+    label: "Change Password",
+    kh: "ប្តូរពាក្យសម្ងាត់",
+    desc: "Link in Profile.",
+  },
+  {
+    group: "Profile menu",
+    key: "profile_notif_settings",
+    label: "Notification Settings",
+    kh: "កំណត់ការជូនដំណឹង",
+    desc: "Link in Profile.",
+  },
+  {
+    group: "Profile menu",
+    key: "profile_help",
+    label: "Help & Support",
+    kh: "ជំនួយ",
+    desc: "Link in Profile.",
+  },
+];
+const CUSTOMER_FEATURE_DEF = Object.fromEntries(
+  CUSTOMER_FEATURES.map((f) => [f.key, f]),
+);
+function normalizeCustomerRole(r) {
+  const raw = r?.denied_features ?? r?.denied ?? [];
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object"
+      ? Object.keys(raw).filter((k) => raw[k])
+      : [];
+  return {
+    name: String(r?.name || "").trim(),
+    description: r?.description || "",
+    system: !!(r?.system ?? r?.is_system),
+    denied: [...new Set(list)].filter(
+      (k) => CUSTOMER_FEATURE_DEF[k] && !CUSTOMER_FEATURE_DEF[k].locked,
+    ),
+  };
+}
+function ensureDefaultCustomerRole(list) {
+  const rows = (list || []).map(normalizeCustomerRole).filter((r) => r.name);
+  const std = rows.find((r) => r.name === DEFAULT_CUSTOMER_ROLE) || {
+    name: DEFAULT_CUSTOMER_ROLE,
+    description: "Default role for every customer",
+    denied: [],
+  };
+  return [
+    { ...std, system: true },
+    ...rows.filter((r) => r.name !== DEFAULT_CUSTOMER_ROLE),
+  ];
+}
+const customerFeatureStore = {
+  disabled: lsRead(CUSTOMER_FEATURES_KEY, {}), // Master: key -> true (OFF for all)
+  roles: ensureDefaultCustomerRole(lsRead(CUSTOMER_ROLES_KEY, [])),
+  role: DEFAULT_CUSTOMER_ROLE, // role of the customer signed in right now
+  rolesServer: false,
+  version: 0,
+  subs: new Set(),
+};
+function notifyCustomerFeatures() {
+  customerFeatureStore.version += 1;
+  customerFeatureStore.subs.forEach((fn) => fn());
+}
+function commitCustomerFeatures(disabled, persistLocal = true) {
+  customerFeatureStore.disabled = { ...disabled };
+  if (persistLocal)
+    lsWrite(CUSTOMER_FEATURES_KEY, customerFeatureStore.disabled);
+  notifyCustomerFeatures();
+}
+function commitCustomerRoles(roles, persistLocal = true) {
+  customerFeatureStore.roles = ensureDefaultCustomerRole(roles);
+  if (persistLocal) lsWrite(CUSTOMER_ROLES_KEY, customerFeatureStore.roles);
+  notifyCustomerFeatures();
+}
+// Called by the customer app when the signed-in customer changes.
+function setCurrentCustomerRole(name) {
+  const next = String(name || "").trim() || DEFAULT_CUSTOMER_ROLE;
+  if (customerFeatureStore.role === next) return;
+  customerFeatureStore.role = next;
+  notifyCustomerFeatures();
+}
+function findCustomerRole(name) {
+  const roles = customerFeatureStore.roles;
+  return (
+    roles.find((r) => r.name === name) ||
+    roles.find((r) => r.name === DEFAULT_CUSTOMER_ROLE)
+  );
+}
+// Is `key` available to the current customer? (role unknown → Standard)
+function isCustomerFeatureOn(key) {
+  if (CUSTOMER_FEATURE_DEF[key]?.locked) return true;
+  if (customerFeatureStore.disabled[key]) return false;
+  const role = findCustomerRole(customerFeatureStore.role);
+  return !(role && role.denied.includes(key));
+}
+function useCustomerFeatureVersion() {
+  return React.useSyncExternalStore(
+    (fn) => {
+      customerFeatureStore.subs.add(fn);
+      return () => customerFeatureStore.subs.delete(fn);
+    },
+    () => customerFeatureStore.version,
+  );
+}
+// Returns `on(key)`; re-renders when a switch / role changes.
+function useCustomerFeatures() {
+  useCustomerFeatureVersion();
+  return isCustomerFeatureOn;
+}
+function useCustomerRoles() {
+  useCustomerFeatureVersion();
+  return customerFeatureStore.roles;
+}
+// true = customer_features table reachable; roles table status is kept in
+// customerFeatureStore.rolesServer.
+async function syncCustomerFeaturesFromServer() {
+  if (!supabase) return false;
+  let ok = false;
+  try {
+    const { data, error } = await supabase
+      .from("customer_features")
+      .select("key,enabled");
+    if (!error && Array.isArray(data)) {
+      const disabled = {};
+      data.forEach((r) => {
+        if (r.enabled === false) disabled[r.key] = true;
+      });
+      commitCustomerFeatures(disabled);
+      ok = true;
+    }
+  } catch {
+    /* table missing */
+  }
+  try {
+    const { data, error } = await supabase.from("customer_roles").select("*");
+    if (!error && Array.isArray(data)) {
+      customerFeatureStore.rolesServer = true;
+      if (data.length) commitCustomerRoles(data);
+    } else {
+      customerFeatureStore.rolesServer = false;
+    }
+  } catch {
+    customerFeatureStore.rolesServer = false;
+  }
+  return ok;
+}
+async function saveCustomerFeatures(disabled) {
+  commitCustomerFeatures(disabled);
+  if (!supabase) return { error: null, local: true };
+  const rows = CUSTOMER_FEATURES.filter((f) => !f.locked).map((f) => ({
+    key: f.key,
+    enabled: !disabled[f.key],
+    updated_at: new Date().toISOString(),
+  }));
+  const { error } = await supabase
+    .from("customer_features")
+    .upsert(rows, { onConflict: "key" });
+  return { error };
+}
+async function saveCustomerRoles(roles, removedNames = []) {
+  commitCustomerRoles(roles);
+  if (!supabase) return { error: null, local: true };
+  const rows = customerFeatureStore.roles.map((r) => ({
+    name: r.name,
+    description: r.description || null,
+    is_system: r.system,
+    denied_features: r.denied,
+    updated_at: new Date().toISOString(),
+  }));
+  let { error } = await supabase
+    .from("customer_roles")
+    .upsert(rows, { onConflict: "name" });
+  if (!error && removedNames.length) {
+    ({ error } = await supabase
+      .from("customer_roles")
+      .delete()
+      .in("name", removedNames));
+  }
+  customerFeatureStore.rolesServer = !error;
+  return { error };
+}
+
 const CustomerApp = (() => {
   const {
     Home,
@@ -21636,16 +21998,80 @@ const CustomerApp = (() => {
 
   if (
     typeof document !== "undefined" &&
-    !document.getElementById("drsb-font")
+    !document.getElementById("cb-cust-font")
   ) {
     const l = document.createElement("link");
-    l.id = "drsb-font";
+    l.id = "cb-cust-font";
     l.rel = "stylesheet";
     l.href =
-      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Khmer:wght@400;500;600;700&display=swap";
+      "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Kantumruy+Pro:wght@400;500;600;700&family=Noto+Sans+Khmer:wght@400;500;600;700&display=swap";
     document.head.appendChild(l);
   }
-  const FONT = { fontFamily: "Inter,'Noto Sans Khmer',system-ui,sans-serif" };
+  // Fonts are applied PER LANGUAGE by <Provider> (wrapper div below), so the
+  // old `style={FONT}` props are now empty and simply inherit.
+  const FONT = {};
+  const FONTS = {
+    en: { fontFamily: "'Poppins','Inter',system-ui,sans-serif" },
+    km: {
+      fontFamily: "'Kantumruy Pro','Noto Sans Khmer',system-ui,sans-serif",
+    },
+  };
+  const LANG_KEY = "cb_cust_lang";
+  const readLang = () => {
+    try {
+      const v = localStorage.getItem(LANG_KEY);
+      return v === "en" || v === "km" ? v : "km";
+    } catch {
+      return "km";
+    }
+  };
+  let CUR_LANG = readLang(); // read by fmtDate / fmtDateTime
+  const dateLoc = () => (CUR_LANG === "km" ? "km-KH-u-nu-latn" : "en-GB");
+
+  // [English, Khmer] — one language is shown at a time (never mixed).
+  const STATUS_TX = {
+    Processing: ["Processing", "កំពុងរៀបចំ"],
+    "In Transit": ["In Transit", "កំពុងដឹកជញ្ជូន"],
+    Arrived: ["Arrived", "មកដល់ហើយ"],
+    "Ready for Pickup": ["Ready for Pickup", "ត្រៀមយក"],
+    Completed: ["Completed", "បានបញ្ចប់"],
+    "Pending Shipping Payment": [
+      "Pending Shipping Payment",
+      "រង់ចាំបង់ថ្លៃដឹក",
+    ],
+  };
+  const AIR_KM = {
+    "Order Processing": "កំពុងរៀបចំការបញ្ជាទិញ",
+    "In Transit": "កំពុងដឹកជញ្ជូន",
+    "Received at Indonesia Warehouse": "ទទួលនៅឃ្លាំងឥណ្ឌូនេស៊ី",
+    "Departed Indonesia Warehouse": "ចេញពីឃ្លាំងឥណ្ឌូនេស៊ី",
+    "Received at Cambodia Warehouse": "ទទួលនៅឃ្លាំងកម្ពុជា",
+    "Complete Order": "ការបញ្ជាទិញបានបញ្ចប់",
+    "Refund Order": "សងប្រាក់វិញ",
+  };
+  const airTx = (lang, st) => {
+    const c = canonicalAirStatus(st);
+    return lang === "km" ? AIR_KM[c] || c : c;
+  };
+  const TAB_TX = {
+    All: ["All", "ទាំងអស់"],
+    "In Transit": ["In Transit", "កំពុងដឹកជញ្ជូន"],
+    Arrived: ["Arrived", "មកដល់ហើយ"],
+    Ready: ["Ready", "ត្រៀមយក"],
+    "To Pay": ["To Pay", "ត្រូវបង់"],
+    Completed: ["Completed", "បានបញ្ចប់"],
+    Processing: ["Processing", "កំពុងរៀបចំ"],
+    Refund: ["Refund", "សងប្រាក់វិញ"],
+  };
+  const WH_LBL = {
+    "Receiver Name": ["Receiver Name", "ឈ្មោះអ្នកទទួល"],
+    Phone: ["Phone", "លេខទូរស័ព្ទ"],
+    Province: ["Province", "ខេត្ត"],
+    City: ["City", "ទីក្រុង"],
+    District: ["District", "ស្រុក/ខណ្ឌ"],
+    "Detailed Address": ["Detailed Address", "អាសយដ្ឋានលម្អិត"],
+    "Customer Code": ["Customer Code", "កូដអតិថិជន"],
+  };
 
   // ---------- constants & helpers ----------
   const STEPS = [
@@ -21678,7 +22104,7 @@ const CustomerApp = (() => {
             : ["Completed", "bg-slate-100 text-slate-600"];
   const fmtDate = (iso) =>
     iso
-      ? new Date(iso).toLocaleDateString("en-GB", {
+      ? new Date(iso).toLocaleDateString(dateLoc(), {
           day: "2-digit",
           month: "short",
           year: "numeric",
@@ -21707,25 +22133,55 @@ const CustomerApp = (() => {
   // Built from the status history that already exists (China timeline + AIR
   // history), so every status change shows up without a separate table.
   const CN_NOTIF = {
-    Inbound: "ទំនិញចូលឃ្លាំងចិនហើយ",
-    Outbound: "ទំនិញចេញពីឃ្លាំងចិនហើយ",
-    Arrived: "ទំនិញមកដល់កម្ពុជាហើយ",
-    "Shipping to Branch": "ទំនិញកំពុងដឹកទៅសាខា",
-    "Inbound Warehouse": "ទំនិញចូលឃ្លាំងសាខា · ត្រៀមយក",
-    Complete: "ការដឹកជញ្ជូនបានបញ្ចប់",
+    Inbound: [
+      "Your goods arrived at the China warehouse",
+      "ទំនិញចូលឃ្លាំងចិនហើយ",
+    ],
+    Outbound: ["Your goods left the China warehouse", "ទំនិញចេញពីឃ្លាំងចិនហើយ"],
+    Arrived: ["Your goods arrived in Cambodia", "ទំនិញមកដល់កម្ពុជាហើយ"],
+    "Shipping to Branch": [
+      "Your goods are on the way to the branch",
+      "ទំនិញកំពុងដឹកទៅសាខា",
+    ],
+    "Inbound Warehouse": [
+      "Goods arrived at the branch · ready for pickup",
+      "ទំនិញចូលឃ្លាំងសាខា · ត្រៀមយក",
+    ],
+    Complete: ["Delivery completed", "ការដឹកជញ្ជូនបានបញ្ចប់"],
   };
   const AIR_NOTIF = {
-    "Order Processing": "AIR Order កំពុងដំណើរការ",
-    "In Transit": "AIR ទំនិញកំពុងដឹកជញ្ជូន",
-    "Received at Indonesia Warehouse": "ទំនិញចូលឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
-    "Departed Indonesia Warehouse": "ទំនិញចេញពីឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
-    "Received at Cambodia Warehouse": "ទំនិញចូលឃ្លាំងកម្ពុជាហើយ",
-    "Complete Order": "AIR Order បានបញ្ចប់",
-    "Refund Order": "AIR Order ត្រូវបាន Refund",
+    "Order Processing": [
+      "Your air order is being processed",
+      "ការបញ្ជាទិញផ្លូវអាកាសកំពុងដំណើរការ",
+    ],
+    "In Transit": [
+      "Your air goods are in transit",
+      "ទំនិញផ្លូវអាកាសកំពុងដឹកជញ្ជូន",
+    ],
+    "Received at Indonesia Warehouse": [
+      "Goods arrived at the Indonesia warehouse",
+      "ទំនិញចូលឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
+    ],
+    "Departed Indonesia Warehouse": [
+      "Goods left the Indonesia warehouse",
+      "ទំនិញចេញពីឃ្លាំងឥណ្ឌូនេស៊ីហើយ",
+    ],
+    "Received at Cambodia Warehouse": [
+      "Goods arrived at the Cambodia warehouse",
+      "ទំនិញចូលឃ្លាំងកម្ពុជាហើយ",
+    ],
+    "Complete Order": [
+      "Your air order is completed",
+      "ការបញ្ជាទិញផ្លូវអាកាសបានបញ្ចប់",
+    ],
+    "Refund Order": [
+      "Your air order was refunded",
+      "ការបញ្ជាទិញផ្លូវអាកាសត្រូវបានសងប្រាក់វិញ",
+    ],
   };
   const fmtDateTime = (iso) =>
     iso
-      ? new Date(iso).toLocaleString("en-GB", {
+      ? new Date(iso).toLocaleString(dateLoc(), {
           day: "2-digit",
           month: "short",
           hour: "2-digit",
@@ -21734,6 +22190,18 @@ const CustomerApp = (() => {
       : "";
 
   function Provider({ children }) {
+    const [lang, setLangState] = useState(readLang);
+    const langRef = useRef(lang);
+    langRef.current = lang;
+    CUR_LANG = lang;
+    const setLang = (l) => {
+      setLangState(l);
+      try {
+        localStorage.setItem(LANG_KEY, l);
+      } catch {}
+    };
+    // tr(english, khmer) → the text for the active language (never mixed)
+    const tr = (en, km) => (lang === "km" ? km : en);
     const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
     const [me, setMe] = useState(null);
     const [ships, setShips] = useState([]);
@@ -21743,6 +22211,10 @@ const CustomerApp = (() => {
     const [branchErr, setBranchErr] = useState("");
     const [loading, setLoading] = useState(true);
     const [wallet, setWallet] = useState({ balance: 0, tx: [] });
+    // Feature permissions follow the signed-in customer's role.
+    useEffect(() => {
+      setCurrentCustomerRole(me?.customer_role);
+    }, [me]);
     const [toast, setToast] = useState("");
     const say = (m) => {
       setToast(m);
@@ -21756,7 +22228,7 @@ const CustomerApp = (() => {
         .eq("auth_user_id", uid)
         .maybeSingle();
       if (error || !data) {
-        say("Unable to load account");
+        say(tr("Unable to load account", "មិនអាចទាញយកគណនីបានទេ"));
         return null;
       }
       setMe(data);
@@ -21835,8 +22307,11 @@ const CustomerApp = (() => {
       });
       if (error)
         return /insufficient/i.test(error.message)
-          ? "Your wallet balance is not enough."
-          : error.message || "Payment failed.";
+          ? tr(
+              "Your wallet balance is not enough.",
+              "សមតុល្យកាបូបមិនគ្រប់គ្រាន់ទេ។",
+            )
+          : error.message || tr("Payment failed.", "ការបង់ប្រាក់បរាជ័យ។");
       await refreshMoney();
       return null;
     };
@@ -21912,28 +22387,50 @@ const CustomerApp = (() => {
           ]);
         setLoading(false);
       })();
+      // Re-run only when the signed-in USER changes (not on token refresh /
+      // password change, which hand us a new session object for the same user).
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [session]);
+    }, [session === undefined ? "pending" : session ? session.user.id : "out"]);
 
     const login = async (phone, pw) => {
-      if (!supabase) return "Supabase មិនទាន់តភ្ជាប់";
-      if (!phone || !pw) return "Please enter your phone number and password.";
+      if (!supabase)
+        return tr(
+          "The service is not connected yet.",
+          "សេវាមិនទាន់តភ្ជាប់នៅឡើយទេ។",
+        );
+      if (!phone || !pw)
+        return tr(
+          "Please enter your phone number and password.",
+          "សូមបញ្ចូលលេខទូរស័ព្ទ និងលេខសម្ងាត់។",
+        );
       const { error } = await supabase.auth.signInWithPassword({
         email: fakeEmailForPhone(phone),
         password: pw,
       });
-      return error ? "Incorrect phone number or password." : null;
+      return error
+        ? tr(
+            "Incorrect phone number or password.",
+            "លេខទូរស័ព្ទ ឬលេខសម្ងាត់មិនត្រឹមត្រូវ។",
+          )
+        : null;
     };
     const signup = async (name, phone, email, pw) => {
-      if (!supabase) return "Supabase មិនទាន់តភ្ជាប់";
+      if (!supabase)
+        return tr(
+          "The service is not connected yet.",
+          "សេវាមិនទាន់តភ្ជាប់នៅឡើយទេ។",
+        );
       const { data, error } = await supabase.auth.signUp({
         email: fakeEmailForPhone(phone),
         password: pw,
       });
       if (error)
         return /already|registered|exists/i.test(error.message)
-          ? "Phone numberនេះបានប្រើរួចហើយ"
-          : "Unable to create account";
+          ? tr(
+              "This phone number is already registered.",
+              "លេខទូរស័ព្ទនេះបានប្រើរួចហើយ។",
+            )
+          : tr("Unable to create account", "មិនអាចបង្កើតគណនីបានទេ");
       if (!data.session) return "signup-needs-confirm"; // "Confirm email" is ON in Supabase — turn it off, see code comment above
       const { error: insErr } = await supabase.from("customers").insert({
         auth_user_id: data.user.id,
@@ -21942,12 +22439,70 @@ const CustomerApp = (() => {
         email: email || null,
         status: "active",
       });
-      if (insErr) return "Unable to save account: " + insErr.message;
+      if (insErr)
+        return (
+          tr("Unable to save account: ", "មិនអាចរក្សាទុកគណនីបានទេ៖ ") +
+          insErr.message
+        );
       await loadMe(data.user.id);
       await Promise.all([loadShips(), loadAddrs()]);
       return null;
     };
     const logout = () => supabase && supabase.auth.signOut();
+    // Verify the CURRENT password on a throw-away client (no stored session),
+    // so the live session / listeners are not disturbed, then set the new one.
+    const changePassword = async (current, next) => {
+      if (!supabase)
+        return tr(
+          "The service is not connected yet.",
+          "សេវាមិនទាន់តភ្ជាប់នៅឡើយទេ។",
+        );
+      const { data: u } = await supabase.auth.getUser();
+      const email = u?.user?.email;
+      if (!email)
+        return tr(
+          "Session expired. Please log in again.",
+          "សម័យបានផុតកំណត់ សូមចូលគណនីម្តងទៀត។",
+        );
+      const probe = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+      const { error: badPw } = await probe.auth.signInWithPassword({
+        email,
+        password: current,
+      });
+      if (badPw)
+        return tr(
+          "Current password is incorrect.",
+          "លេខសម្ងាត់បច្ចុប្បន្នមិនត្រឹមត្រូវទេ។",
+        );
+      const { error } = await supabase.auth.updateUser({ password: next });
+      if (error)
+        return /same|different/i.test(error.message || "")
+          ? tr(
+              "New password must be different from the current one.",
+              "លេខសម្ងាត់ថ្មីត្រូវខុសពីលេខសម្ងាត់បច្ចុប្បន្ន។",
+            )
+          : error.message ||
+              tr("Unable to change password.", "មិនអាចប្តូរលេខសម្ងាត់បានទេ។");
+      if (me?.must_change_password) {
+        // Staff reset this account → clear the "must change" flag. Prefer the
+        // SECURITY DEFINER rpc; fall back to a direct update. If both fail the
+        // session still continues (the flag clears on the next successful try).
+        const viaRpc = await supabase.rpc("clear_must_change_password");
+        if (viaRpc.error)
+          await supabase
+            .from("customers")
+            .update({ must_change_password: false })
+            .eq("id", me.id);
+        setMe((m) => (m ? { ...m, must_change_password: false } : m));
+      }
+      return null;
+    };
 
     const saveAddr = async (a) => {
       const row = {
@@ -21984,14 +22539,16 @@ const CustomerApp = (() => {
         await loadAddrs();
         emitCBToast(
           "ok",
-          a.id ? "បានកែប្រែអាសយដ្ឋាន" : "បានបន្ថែមអាសយដ្ឋាន",
+          a.id
+            ? tr("Address updated", "បានកែប្រែអាសយដ្ឋាន")
+            : tr("Address added", "បានបន្ថែមអាសយដ្ឋាន"),
           a.label || "",
         );
       } catch (err) {
         emitCBToast(
           "err",
-          "រក្សាទុកមិនបានជោគជ័យ",
-          err?.message || "សូមព្យាយាមម្តងទៀត",
+          tr("Could not save", "រក្សាទុកមិនបានជោគជ័យ"),
+          err?.message || tr("Please try again", "សូមព្យាយាមម្តងទៀត"),
         );
       }
     };
@@ -22000,9 +22557,14 @@ const CustomerApp = (() => {
         .from("customer_addresses")
         .delete()
         .eq("id", id);
-      if (error) return emitCBToast("err", "លុបមិនបានជោគជ័យ", error.message);
+      if (error)
+        return emitCBToast(
+          "err",
+          tr("Could not delete", "លុបមិនបានជោគជ័យ"),
+          error.message,
+        );
       await loadAddrs();
-      emitCBToast("ok", "បានលុបអាសយដ្ឋាន");
+      emitCBToast("ok", tr("Address deleted", "បានលុបអាសយដ្ឋាន"));
     };
     const setDef = async (id) => {
       await supabase
@@ -22014,7 +22576,11 @@ const CustomerApp = (() => {
         .update({ is_default: true })
         .eq("id", id);
       if (error)
-        return emitCBToast("err", "កំណត់លំនាំដើមមិនបានជោគជ័យ", error.message);
+        return emitCBToast(
+          "err",
+          tr("Could not set as default", "កំណត់លំនាំដើមមិនបានជោគជ័យ"),
+          error.message,
+        );
       const picked = addrs.find((x) => x.id === id);
       if (picked?.branch)
         await supabase
@@ -22022,7 +22588,10 @@ const CustomerApp = (() => {
           .update({ default_kh_branch: picked.branch })
           .eq("id", me.id);
       await loadAddrs();
-      emitCBToast("ok", "បានកំណត់ជាអាសយដ្ឋានលំនាំដើម");
+      emitCBToast(
+        "ok",
+        tr("Default address updated", "បានកំណត់ជាអាសយដ្ឋានលំនាំដើម"),
+      );
     };
 
     // ----- Notifications -----
@@ -22100,7 +22669,8 @@ const CustomerApp = (() => {
               kind: "air",
               to: P(`/air-shipments/${encodeURIComponent(o.order_id)}`),
               title: AIR_NOTIF[st],
-              text: `${o.order_id}${o.tk ? ` · TK ${o.tk}` : ""}${refund ? ` · មូលហេតុ: ${h.note}` : ""}`,
+              text: `${o.order_id}${o.tk ? ` · TK ${o.tk}` : ""}`,
+              reason: refund ? h.note : "",
               at: h.created_at,
             });
           });
@@ -22124,7 +22694,7 @@ const CustomerApp = (() => {
         const newest = list[0] ? new Date(list[0].at).getTime() : 0;
         // A new status arrived while the app is open → small heads-up toast.
         if (latestNotifRef.current && newest > latestNotifRef.current)
-          say(`🔔 ${list[0].title}`);
+          say(`🔔 ${list[0].title[langRef.current === "km" ? 1 : 0]}`);
         if (newest) latestNotifRef.current = newest;
         setNotifs(list);
       })();
@@ -22156,6 +22726,9 @@ const CustomerApp = (() => {
     };
 
     const v = {
+      lang,
+      setLang,
+      tr,
       me,
       say,
       toast,
@@ -22163,6 +22736,7 @@ const CustomerApp = (() => {
       login,
       signup,
       logout,
+      changePassword,
       ships,
       airShips,
       notifs,
@@ -22179,27 +22753,42 @@ const CustomerApp = (() => {
       delAddr,
       setDef,
     };
-    return <Ctx.Provider value={v}>{children}</Ctx.Provider>;
+    return (
+      <Ctx.Provider value={v}>
+        <div
+          lang={lang}
+          className={lang === "km" ? "cb-km" : "cb-en"}
+          style={FONTS[lang]}
+        >
+          <style>{`.cb-km *{line-height:1.6 !important}.cb-km input,.cb-km select{line-height:normal !important}`}</style>
+          {children}
+        </div>
+      </Ctx.Provider>
+    );
   }
 
   // ---------- UI atoms ----------
-  const AirCustomerBadge = ({ status }) => (
-    <span
-      className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${airStatusTone(status)}`}
-    >
-      {status}
-    </span>
-  );
+  const AirCustomerBadge = ({ status }) => {
+    const { lang } = useApp();
+    return (
+      <span
+        className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${airStatusTone(status)}`}
+      >
+        {airTx(lang, status)}
+      </span>
+    );
+  };
   const Badge = ({ n, fee }) => {
     const owes = n === 4 && fee?.state === "due" && fee.total > 0;
     const [l, c] = owes
       ? ["Pending Shipping Payment", "bg-red-50 text-red-600"]
       : statusOf(n);
+    const { lang } = useApp();
     return (
       <span
         className={`text-[11px] font-semibold px-2.5 py-1 rounded-full whitespace-nowrap shrink-0 ${c}`}
       >
-        {l}
+        {(STATUS_TX[l] || [l, l])[lang === "km" ? 1 : 0]}
       </span>
     );
   };
@@ -22225,6 +22814,7 @@ const CustomerApp = (() => {
           <input
             value={v}
             onChange={(e) => set(e.target.value)}
+            placeholder={ph}
             type={pw && !show ? "password" : type}
             className="flex-1 bg-transparent outline-none text-[15px] text-slate-900 min-w-0"
           />
@@ -22274,9 +22864,75 @@ const CustomerApp = (() => {
     </span>
   );
 
+  // ---------- Language switcher ----------
+  function LangSheet({ onClose }) {
+    const { lang, setLang, tr } = useApp();
+    const opts = [
+      ["km", "ភាសាខ្មែរ", "🇰🇭"],
+      ["en", "English", "🇬🇧"],
+    ];
+    return (
+      <div
+        className="fixed inset-0 bg-slate-900/50 z-[70] flex items-end justify-center text-slate-900"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white w-full max-w-md rounded-t-3xl p-5 space-y-3"
+          style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+        >
+          <h2 className="font-bold text-lg">
+            {tr("Choose Your Language", "ជ្រើសរើសភាសា")}
+          </h2>
+          {opts.map(([k, name, flag]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => {
+                setLang(k);
+                onClose();
+              }}
+              className={`w-full h-14 rounded-2xl flex items-center gap-3 px-3.5 font-semibold border ${lang === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-800 border-slate-200"}`}
+            >
+              <span className="w-9 h-9 rounded-full bg-white grid place-items-center text-xl shadow-sm">
+                {flag}
+              </span>
+              <span className="flex-1 text-left">{name}</span>
+              {lang === k && <Check size={18} />}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full h-12 text-slate-500 font-semibold"
+          >
+            {tr("Cancel", "បោះបង់")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+  function LangBtn() {
+    const { lang, tr } = useApp();
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button
+          type="button"
+          aria-label={tr("Language", "ភាសា")}
+          onClick={() => setOpen(true)}
+          className="w-10 h-10 grid place-items-center rounded-full bg-white/15 text-xl"
+        >
+          {lang === "km" ? "🇰🇭" : "🇬🇧"}
+        </button>
+        {open && <LangSheet onClose={() => setOpen(false)} />}
+      </>
+    );
+  }
+
   // ---------- Auth ----------
   function Auth() {
-    const { login, signup, me } = useApp();
+    const { login, signup, me, tr } = useApp();
     const [mode, setMode] = useState("login");
     const [f, setF] = useState({
       id: "",
@@ -22293,15 +22949,30 @@ const CustomerApp = (() => {
       setErr("");
       if (mode === "forgot") {
         setMode("login");
-        setErr("សូមទាក់ទងផ្នែកជំនួយ ដើម្បីកំណត់លេខសម្ងាត់ឡើងវិញ");
+        setErr(
+          tr(
+            "Please contact support to reset your password.",
+            "សូមទាក់ទងផ្នែកជំនួយ ដើម្បីកំណត់លេខសម្ងាត់ឡើងវិញ។",
+          ),
+        );
         return;
       }
       if (mode === "signup" && !(f.name && f.phone && f.pw.length >= 4)) {
-        setErr("សូមបំពេញឈ្មោះ Phone number និងលេខសម្ងាត់ (≥4)");
+        setErr(
+          tr(
+            "Please enter your name, phone number and a password (at least 4 characters).",
+            "សូមបំពេញឈ្មោះ លេខទូរស័ព្ទ និងលេខសម្ងាត់ (យ៉ាងតិច 4 តួ)។",
+          ),
+        );
         return;
       }
       if (mode === "login" && !(f.id && f.pw)) {
-        setErr("Please enter your phone number and password.");
+        setErr(
+          tr(
+            "Please enter your phone number and password.",
+            "សូមបញ្ចូលលេខទូរស័ព្ទ និងលេខសម្ងាត់។",
+          ),
+        );
         return;
       }
       setBusy(true);
@@ -22310,37 +22981,53 @@ const CustomerApp = (() => {
           ? await login(f.id, f.pw)
           : await signup(f.name, f.phone, f.email, f.pw);
       setBusy(false);
-      if (e === "signup-needs-confirm") setErr("គណនីបានបង្កើត សូមចូលម្ដងទៀត");
+      if (e === "signup-needs-confirm")
+        setErr(
+          tr(
+            "Account created. Please log in again.",
+            "គណនីបានបង្កើត សូមចូលម្ដងទៀត។",
+          ),
+        );
       else if (e) setErr(e);
     };
     return (
       <div className="min-h-screen bg-slate-50" style={FONT}>
         <div className="max-w-md mx-auto">
-          <div className="bg-gradient-to-b from-blue-700 to-blue-500 text-white px-6 pt-14 pb-16 rounded-b-[36px] text-center">
+          <div className="relative bg-gradient-to-b from-blue-700 to-blue-500 text-white px-6 pt-14 pb-16 rounded-b-[36px] text-center">
+            <div className="absolute top-4 right-4">
+              <LangBtn />
+            </div>
             <div className="mx-auto w-16 h-16 rounded-2xl bg-white/15 grid place-items-center mb-3">
               <Ship size={32} />
             </div>
             <div className="text-3xl font-extrabold tracking-tight">
               Cargo Bridge
             </div>
-            <p className="text-blue-100 text-xs">Global to Your Door</p>
-            <p className="mt-5 font-semibold">Customer Portal</p>
+            <p className="text-blue-100 text-xs">
+              {tr("Global to Your Door", "ដឹកជញ្ជូនដល់មាត់ទ្វារអ្នក")}
+            </p>
+            <p className="mt-5 font-semibold">
+              {tr("Customer Portal", "ផតថលអតិថិជន")}
+            </p>
             <p className="text-blue-100 text-sm">
-              តាមដានទំនិញរបស់អ្នក គ្រប់ពេល គ្រប់ទីកន្លែង
+              {tr(
+                "Track your shipments anytime, anywhere",
+                "តាមដានទំនិញរបស់អ្នក គ្រប់ពេល គ្រប់ទីកន្លែង",
+              )}
             </p>
           </div>
           <Card className="mx-4 -mt-8 p-5 space-y-4">
             <h2 className="font-bold text-lg text-slate-900">
               {mode === "login"
-                ? "ចូលគណនី"
+                ? tr("Log In", "ចូលគណនី")
                 : mode === "signup"
-                  ? "បង្កើតគណនី"
-                  : "ភ្លេចលេខសម្ងាត់"}
+                  ? tr("Create Account", "បង្កើតគណនី")
+                  : tr("Forgot Password", "ភ្លេចលេខសម្ងាត់")}
             </h2>
             {mode === "signup" && (
               <Field
                 icon={User}
-                ph="Full name / ឈ្មោះពេញ"
+                ph={tr("Full name", "ឈ្មោះពេញ")}
                 v={f.name}
                 set={s("name")}
               />
@@ -22348,14 +23035,14 @@ const CustomerApp = (() => {
             {mode === "signup" ? (
               <Field
                 icon={Phone}
-                ph="Phone number / Phone number"
+                ph={tr("Phone number", "លេខទូរស័ព្ទ")}
                 v={f.phone}
                 set={s("phone")}
               />
             ) : (
               <Field
                 icon={Phone}
-                ph="Phone number / Phone number"
+                ph={tr("Phone number", "លេខទូរស័ព្ទ")}
                 v={f.id}
                 set={s("id")}
               />
@@ -22363,7 +23050,7 @@ const CustomerApp = (() => {
             {mode === "signup" && (
               <Field
                 icon={Mail}
-                ph="Email (optional)"
+                ph={tr("Email (optional)", "អ៊ីមែល (មិនបង្ខំ)")}
                 v={f.email}
                 set={s("email")}
               />
@@ -22372,7 +23059,7 @@ const CustomerApp = (() => {
               <Field
                 icon={Lock}
                 pw
-                ph="Password / លេខសម្ងាត់"
+                ph={tr("Password", "លេខសម្ងាត់")}
                 v={f.pw}
                 set={s("pw")}
               />
@@ -22384,27 +23071,27 @@ const CustomerApp = (() => {
             )}
             <Btn disabled={busy} onClick={go}>
               {busy
-                ? "សូមរង់ចាំ..."
+                ? tr("Please wait...", "សូមរង់ចាំ...")
                 : mode === "login"
-                  ? "Login"
+                  ? tr("Log In", "ចូលគណនី")
                   : mode === "signup"
-                    ? "Sign Up"
-                    : "Send reset link"}
+                    ? tr("Sign Up", "បង្កើតគណនី")
+                    : tr("Send reset link", "ផ្ញើតំណកំណត់ឡើងវិញ")}
             </Btn>
             {mode === "login" && (
               <button
                 onClick={() => setMode("forgot")}
                 className="w-full text-center text-sm text-blue-700 font-medium"
               >
-                Forgot password?
+                {tr("Forgot password?", "ភ្លេចលេខសម្ងាត់?")}
               </button>
             )}
             <p className="text-center text-sm text-slate-500">
               {mode === "signup"
-                ? "មានគណនីរួចហើយ?"
+                ? tr("Already have an account?", "មានគណនីរួចហើយ?")
                 : mode === "login"
-                  ? "មិនទាន់មានគណនី?"
-                  : "ចាំលេខសម្ងាត់ហើយ?"}{" "}
+                  ? tr("Don't have an account?", "មិនទាន់មានគណនី?")
+                  : tr("Remembered your password?", "ចាំលេខសម្ងាត់ហើយ?")}{" "}
               <button
                 onClick={() =>
                   setMode(
@@ -22413,7 +23100,9 @@ const CustomerApp = (() => {
                 }
                 className="text-blue-700 font-semibold"
               >
-                {mode === "login" ? "Sign Up" : "Login"}
+                {mode === "login"
+                  ? tr("Sign Up", "បង្កើតគណនី")
+                  : tr("Log In", "ចូលគណនី")}
               </button>
             </p>
           </Card>
@@ -22424,9 +23113,13 @@ const CustomerApp = (() => {
 
   // ---------- Shell (bottom nav) ----------
   function Shell() {
-    const { me, toast, loading, refreshMoney } = useApp();
+    const { me, toast, loading, refreshMoney, tr } = useApp();
     const { pathname } = useLocation();
     const first = useRef(true);
+    const feat = useCustomerFeatures();
+    useEffect(() => {
+      if (supabase) syncCustomerFeaturesFromServer(); // pick up admin switches
+    }, [pathname]);
     useEffect(() => {
       if (first.current) {
         first.current = false;
@@ -22449,13 +23142,45 @@ const CustomerApp = (() => {
         </div>
       );
     if (!me) return <Navigate to={P("/login")} replace />;
+    // Staff reset this customer's password → they must set their own first.
+    if (me.must_change_password) {
+      if (!pathname.endsWith("/change-password"))
+        return <Navigate to={P("/change-password")} replace />;
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-900" style={FONT}>
+          <div className="max-w-md mx-auto pb-10 relative">
+            <Outlet />
+            {toast && (
+              <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow-lg z-50">
+                {toast}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
     const tabs = [
-      [P(), Home, "Home"],
-      [P("/shipments"), Package, "Shipments"],
-      [P("/air-shipments"), Icons.Plane, "AIR"],
-      [P("/addresses"), MapPin, "Address"],
-      [P("/profile"), User, "Profile"],
-    ];
+      [P(), Home, tr("Home", "ទំព័រដើម"), true],
+      [
+        P("/shipments"),
+        Package,
+        tr("Shipments", "ដឹកជញ្ជូន"),
+        feat("tab_shipments"),
+      ],
+      [
+        P("/air-shipments"),
+        Icons.Plane,
+        tr("AIR", "ផ្លូវអាកាស"),
+        feat("tab_air"),
+      ],
+      [
+        P("/addresses"),
+        MapPin,
+        tr("Address", "អាសយដ្ឋាន"),
+        feat("tab_address"),
+      ],
+      [P("/profile"), User, tr("Profile", "គណនី"), true],
+    ].filter((t) => t[3]);
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900" style={FONT}>
         <div className="max-w-md mx-auto pb-24 relative">
@@ -22470,7 +23195,12 @@ const CustomerApp = (() => {
           className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-100 z-40"
           style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
         >
-          <div className="max-w-md mx-auto grid grid-cols-5">
+          <div
+            className="max-w-md mx-auto grid"
+            style={{
+              gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))`,
+            }}
+          >
             {tabs.map(([to, I, l]) => (
               <NavLink
                 key={to}
@@ -22493,6 +23223,7 @@ const CustomerApp = (() => {
   // ---------- Shipment row ----------
   function AirRow({ s }) {
     const nav = useNavigate();
+    const { tr } = useApp();
     return (
       <Card
         onClick={() =>
@@ -22509,11 +23240,12 @@ const CustomerApp = (() => {
             <AirCustomerBadge status={s.status} />
           </div>
           <p className="text-[13px] text-slate-500 truncate">
-            AIR{s.tk ? ` · TK ${s.tk}` : ""} ·{" "}
-            {s.shop_name || s.product_name || "Shipment"}
+            {tr("AIR", "ផ្លូវអាកាស")}
+            {s.tk ? ` · TK ${s.tk}` : ""} ·{" "}
+            {s.shop_name || s.product_name || tr("Shipment", "ការដឹកជញ្ជូន")}
           </p>
           <p className="text-xs text-slate-400">
-            Created: {fmtDate(s.created_at)}
+            {tr("Created", "បង្កើតនៅ")}: {fmtDate(s.created_at)}
           </p>
         </div>
         <ChevronRight size={18} className="text-slate-300" />
@@ -22523,6 +23255,7 @@ const CustomerApp = (() => {
 
   function Row({ s }) {
     const nav = useNavigate();
+    const { tr } = useApp();
     return (
       <Card
         onClick={() => nav(P("/shipments/" + s.tk))}
@@ -22538,7 +23271,7 @@ const CustomerApp = (() => {
             {s.shop} · {s.desc}
           </p>
           <p className="text-xs text-slate-400">
-            Shipped: {fmtDate(s.createdAt)}
+            {tr("Shipped", "ថ្ងៃផ្ញើ")}: {fmtDate(s.createdAt)}
           </p>
         </div>
         <ChevronRight size={18} className="text-slate-300" />
@@ -22548,7 +23281,8 @@ const CustomerApp = (() => {
 
   // ---------- Home ----------
   function HomePage() {
-    const { me, ships, wallet, unread } = useApp();
+    const { me, ships, airShips, wallet, unread, tr } = useApp();
+    const feat = useCustomerFeatures();
     const nav = useNavigate();
     const [q, setQ] = useState("");
     const owed = ships.filter(
@@ -22556,12 +23290,23 @@ const CustomerApp = (() => {
     );
     const owedTotal = owed.reduce((a, s) => a + s.fee.due, 0);
     const cnt = (f) => ships.filter((s) => f(s.step)).length;
+    // AIR shipments use their own status flow → map onto the same dashboard cards.
+    const airCnt = (f) =>
+      airShips.filter((s) =>
+        f(airStatusIndex(s.status), canonicalAirStatus(s.status)),
+      ).length;
     const stats = [
-      ["Total", "សរុប", ships.length, "bg-slate-100 text-slate-700", Package],
+      [
+        "Total",
+        "សរុប",
+        ships.length + airShips.length,
+        "bg-slate-100 text-slate-700",
+        Package,
+      ],
       [
         "In Transit",
         "កំពុងដឹក",
-        cnt((n) => n >= 0 && n <= 1),
+        cnt((n) => n >= 0 && n <= 1) + airCnt((i) => i >= 0 && i <= 3),
         "bg-blue-50 text-blue-600",
         Ship,
       ],
@@ -22575,147 +23320,218 @@ const CustomerApp = (() => {
       [
         "Ready for Pickup",
         "ត្រៀមយក",
-        cnt((n) => n === 4),
+        cnt((n) => n === 4) + airCnt((i) => i === 4),
         "bg-orange-50 text-orange-500",
         Warehouse,
       ],
       [
         "Completed",
         "បញ្ចប់",
-        cnt((n) => n === 5),
+        cnt((n) => n === 5) + airCnt((i) => i === 5),
         "bg-violet-50 text-violet-600",
         ShieldCheck,
       ],
     ];
+    // One merged, newest-first feed of sea/land + AIR shipments.
+    const ts = (v) => {
+      const t = v ? new Date(v).getTime() : 0;
+      return Number.isFinite(t) ? t : 0;
+    };
+    const feed = [
+      ...(feat("tab_shipments") ? ships : []).map((s) => ({
+        kind: "sea",
+        key: "s-" + s.tk,
+        t: ts(s.createdAt),
+        s,
+      })),
+      ...(feat("tab_air") ? airShips : []).map((s) => ({
+        kind: "air",
+        key: "a-" + (s.id || s.order_id),
+        t: ts(s.updated_at || s.created_at),
+        s,
+      })),
+    ].sort((a, b) => b.t - a.t);
+    const needle = q.trim().toLowerCase();
     const hit =
-      q && ships.filter((s) => s.tk.toLowerCase().includes(q.toLowerCase()));
+      needle &&
+      feed.filter(({ kind, s }) =>
+        kind === "sea"
+          ? String(s.tk || "")
+              .toLowerCase()
+              .includes(needle)
+          : [s.order_id, s.tk, s.shop_name, s.product_name].some((v) =>
+              String(v || "")
+                .toLowerCase()
+                .includes(needle),
+            ),
+      );
+    const renderItem = ({ kind, key, s }) =>
+      kind === "sea" ? <Row key={key} s={s} /> : <AirRow key={key} s={s} />;
     return (
       <>
         <header className="bg-blue-600 text-white px-5 pt-6 pb-16 rounded-b-3xl">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-xl font-bold">Hello {me.name} 👋</h1>
-              <p className="text-blue-100 text-sm">Welcome to Brathna</p>
+              <h1 className="text-xl font-bold">
+                {tr(`Hello ${me.name} 👋`, `សួស្តី ${me.name} 👋`)}
+              </h1>
+              <p className="text-blue-100 text-sm">
+                {tr("Welcome to Brathna", "សូមស្វាគមន៍មកកាន់ Brathna")}
+              </p>
             </div>
-            <button
-              type="button"
-              aria-label="Notifications"
-              onClick={() => nav(P("/notifications"))}
-              className="relative w-10 h-10 grid place-items-center rounded-full bg-white/15"
-            >
-              <Bell size={20} />
-              {unread > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold grid place-items-center">
-                  {unread > 9 ? "9+" : unread}
-                </span>
+            <div className="flex items-center gap-2">
+              <LangBtn />
+              {feat("notifications") && (
+                <button
+                  type="button"
+                  aria-label={tr("Notifications", "ការជូនដំណឹង")}
+                  onClick={() => nav(P("/notifications"))}
+                  className="relative w-10 h-10 grid place-items-center rounded-full bg-white/15"
+                >
+                  <Bell size={20} />
+                  {unread > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold grid place-items-center">
+                      {unread > 9 ? "9+" : unread}
+                    </span>
+                  )}
+                </button>
               )}
-            </button>
+            </div>
           </div>
-          <div className="mt-4 flex items-center gap-2 h-12 bg-white rounded-xl px-3.5 text-slate-900">
-            <Search size={18} className="text-slate-400" />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className="flex-1 outline-none text-[15px]"
-            />
-          </div>
+          {feat("home_search") && (
+            <div className="mt-4 flex items-center gap-2 h-12 bg-white rounded-xl px-3.5 text-slate-900">
+              <Search size={18} className="text-slate-400" />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder={tr("Search tracking number", "ស្វែងរកលេខតាមដាន")}
+                className="flex-1 outline-none text-[15px]"
+              />
+            </div>
+          )}
         </header>
         <div className="px-4 -mt-9 space-y-5">
           {q ? (
             <div className="space-y-2.5 pt-10">
               {hit.length ? (
-                hit.map((s) => <Row key={s.tk} s={s} />)
+                hit.map(renderItem)
               ) : (
                 <p className="text-center text-sm text-slate-400 py-6">
-                  No matching tracking number found in your account.
+                  {tr(
+                    "No matching tracking number found in your account.",
+                    "រកមិនឃើញលេខតាមដានដែលត្រូវគ្នាក្នុងគណនីរបស់អ្នកទេ។",
+                  )}
                 </p>
               )}
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-3">
-                {stats.map(([l, k, n, c, I], i) => (
-                  <Card
-                    key={l}
-                    className={`p-3.5 flex items-center gap-3 ${i === 0 ? "col-span-2" : ""}`}
-                  >
-                    <Icon i={I} c={c} />
-                    <div>
-                      <p className="text-xs text-slate-500">
-                        {l} · {k}
-                      </p>
-                      <p className="text-2xl font-bold leading-tight">{n}</p>
-                    </div>
-                  </Card>
-                ))}
-              </div>
-              <Card
-                onClick={() => nav(P("/wallet"))}
-                className="p-4 flex items-center gap-3 cursor-pointer"
-              >
-                <Icon i={Wallet} c="bg-emerald-50 text-emerald-600" />
-                <div className="flex-1">
-                  <p className="text-xs text-slate-500">My Wallet</p>
-                  <b
-                    className={`text-xl ${wallet.balance < 0 ? "text-red-600" : ""}`}
-                  >
-                    {moneyS(wallet.balance)}
-                  </b>
+              {feat("home_stats") && (
+                <div className="grid grid-cols-2 gap-3">
+                  {stats.map(([l, k, n, c, I], i) => (
+                    <Card
+                      key={l}
+                      className={`p-3.5 flex items-center gap-3 ${i === 0 ? "col-span-2" : ""}`}
+                    >
+                      <Icon i={I} c={c} />
+                      <div>
+                        <p className="text-xs text-slate-500">{tr(l, k)}</p>
+                        <p className="text-2xl font-bold leading-tight">{n}</p>
+                      </div>
+                    </Card>
+                  ))}
                 </div>
-                <ChevronRight size={18} className="text-slate-300" />
-              </Card>
-              {owed.length > 0 && (
+              )}
+              {feat("wallet") && (
                 <Card
-                  onClick={() => nav(P("/shipments"))}
-                  className="p-4 flex items-center gap-3 cursor-pointer border border-red-100 bg-red-50/60"
+                  onClick={() => nav(P("/wallet"))}
+                  className="p-4 flex items-center gap-3 cursor-pointer"
                 >
-                  <Icon i={Info} c="bg-red-100 text-red-600" />
+                  <Icon i={Wallet} c="bg-emerald-50 text-emerald-600" />
                   <div className="flex-1">
-                    <b className="text-[15px] text-red-700">
-                      {owed.length} shipment{owed.length > 1 ? "s" : ""} waiting
-                      for payment
+                    <p className="text-xs text-slate-500">
+                      {tr("My Wallet", "កាបូបរបស់ខ្ញុំ")}
+                    </p>
+                    <b
+                      className={`text-xl ${wallet.balance < 0 ? "text-red-600" : ""}`}
+                    >
+                      {moneyS(wallet.balance)}
                     </b>
-                    <p className="text-xs text-slate-600">
-                      Total due {money(owedTotal)} · tap to pay
+                  </div>
+                  <ChevronRight size={18} className="text-slate-300" />
+                </Card>
+              )}
+              {feat("home_pay_alert") &&
+                feat("tab_shipments") &&
+                feat("pay_shipping") &&
+                owed.length > 0 && (
+                  <Card
+                    onClick={() => nav(P("/shipments"))}
+                    className="p-4 flex items-center gap-3 cursor-pointer border border-red-100 bg-red-50/60"
+                  >
+                    <Icon i={Info} c="bg-red-100 text-red-600" />
+                    <div className="flex-1">
+                      <b className="text-[15px] text-red-700">
+                        {tr(
+                          `${owed.length} shipment${owed.length > 1 ? "s" : ""} waiting for payment`,
+                          `${owed.length} ការដឹកជញ្ជូនកំពុងរង់ចាំការបង់ប្រាក់`,
+                        )}
+                      </b>
+                      <p className="text-xs text-slate-600">
+                        {tr(
+                          `Total due ${money(owedTotal)} · tap to pay`,
+                          `សរុបត្រូវបង់ ${money(owedTotal)} · ចុចដើម្បីបង់`,
+                        )}
+                      </p>
+                    </div>
+                    <ChevronRight size={18} className="text-slate-300" />
+                  </Card>
+                )}
+              {feat("warehouse") && (
+                <Card
+                  onClick={() => nav(P("/warehouse"))}
+                  className="p-4 flex items-center gap-3 cursor-pointer bg-gradient-to-r from-blue-50 to-white"
+                >
+                  <Icon i={Warehouse} />
+                  <div className="flex-1">
+                    <b className="text-[15px]">
+                      {tr("My China Warehouse", "ឃ្លាំងចិនរបស់ខ្ញុំ")}
+                    </b>
+                    <p className="text-xs text-slate-500">
+                      {tr(
+                        "Copy your China warehouse address and send it to your seller",
+                        "ចម្លងអាសយដ្ឋានឃ្លាំងចិន ផ្ញើទៅអ្នកលក់",
+                      )}
                     </p>
                   </div>
                   <ChevronRight size={18} className="text-slate-300" />
                 </Card>
               )}
-              <Card
-                onClick={() => nav(P("/warehouse"))}
-                className="p-4 flex items-center gap-3 cursor-pointer bg-gradient-to-r from-blue-50 to-white"
-              >
-                <Icon i={Warehouse} />
-                <div className="flex-1">
-                  <b className="text-[15px]">My China Warehouse</b>
-                  <p className="text-xs text-slate-500">
-                    ចម្លងអាសយដ្ឋានឃ្លាំងចិន ផ្ញើទៅអ្នកលក់
-                  </p>
-                </div>
-                <ChevronRight size={18} className="text-slate-300" />
-              </Card>
-              <section>
-                <div className="flex justify-between items-center mb-2.5">
-                  <h2 className="font-bold">Recent Shipments</h2>
-                  <button
-                    onClick={() => nav(P("/shipments"))}
-                    className="text-sm text-blue-600 font-medium"
-                  >
-                    View all
-                  </button>
-                </div>
-                <div className="space-y-2.5">
-                  {ships.slice(0, 3).map((s) => (
-                    <Row key={s.tk} s={s} />
-                  ))}
-                </div>
-                {!ships.length && (
-                  <p className="text-center text-sm text-slate-400 py-6">
-                    No shipments yet
-                  </p>
-                )}
-              </section>
+              {feat("home_recent") && (
+                <section>
+                  <div className="flex justify-between items-center mb-2.5">
+                    <h2 className="font-bold">
+                      {tr("Recent Shipments", "ការដឹកជញ្ជូនថ្មីៗ")}
+                    </h2>
+                    {feat("tab_shipments") && (
+                      <button
+                        onClick={() => nav(P("/shipments"))}
+                        className="text-sm text-blue-600 font-medium"
+                      >
+                        {tr("View all", "មើលទាំងអស់")}
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2.5">
+                    {feed.slice(0, 5).map(renderItem)}
+                  </div>
+                  {!feed.length && (
+                    <p className="text-center text-sm text-slate-400 py-6">
+                      {tr("No shipments yet", "មិនទាន់មានការដឹកជញ្ជូនទេ")}
+                    </p>
+                  )}
+                </section>
+              )}
             </>
           )}
         </div>
@@ -22725,7 +23541,7 @@ const CustomerApp = (() => {
 
   // ---------- Shipments list ----------
   function Shipments() {
-    const { ships, airShips } = useApp();
+    const { ships, airShips, tr } = useApp();
     const [t, setT] = useState("All");
     const tabs = {
       All: () => true,
@@ -22738,7 +23554,7 @@ const CustomerApp = (() => {
     const list = ships.filter((s) => tabs[t](s.step, s));
     return (
       <>
-        <Top title="My Shipments" />
+        <Top title={tr("My Shipments", "ការដឹកជញ្ជូនរបស់ខ្ញុំ")} />
         <div className="px-4 pt-4 space-y-3">
           <div className="flex gap-2 overflow-x-auto pb-1">
             {Object.keys(tabs).map((k) => (
@@ -22747,7 +23563,7 @@ const CustomerApp = (() => {
                 onClick={() => setT(k)}
                 className={`px-4 h-9 rounded-full text-[13px] font-semibold whitespace-nowrap ${t === k ? "bg-blue-600 text-white" : "bg-white text-slate-600"}`}
               >
-                {k}
+                {tr(...TAB_TX[k])}
               </button>
             ))}
           </div>
@@ -22756,7 +23572,10 @@ const CustomerApp = (() => {
           ))}
           {!list.length && (
             <p className="text-center text-sm text-slate-400 py-10">
-              No shipments in this status.
+              {tr(
+                "No shipments in this status.",
+                "គ្មានការដឹកជញ្ជូនក្នុងស្ថានភាពនេះទេ។",
+              )}
             </p>
           )}
         </div>
@@ -22816,7 +23635,7 @@ const CustomerApp = (() => {
 
   // ---------- AIR Shipments (customer: separate menu) ----------
   function CustomerAirShipments() {
-    const { airShips, loading } = useApp();
+    const { airShips, loading, tr, lang } = useApp();
     const [t, setT] = useState("All");
     // Filter tabs → the AIR status each one shows (null = everything).
     const tabs = {
@@ -22835,13 +23654,13 @@ const CustomerApp = (() => {
     if (loading)
       return (
         <>
-          <Top title="AIR Shipments" />
+          <Top title={tr("AIR Shipments", "ដឹកជញ្ជូនផ្លូវអាកាស")} />
           <CustomerAirSkeleton />
         </>
       );
     return (
       <>
-        <Top title="AIR Shipments" />
+        <Top title={tr("AIR Shipments", "ដឹកជញ្ជូនផ្លូវអាកាស")} />
         <div className="px-4 pt-4 space-y-3">
           <div className="rounded-2xl bg-blue-50 border border-blue-100 p-4">
             <div className="flex items-center gap-3">
@@ -22849,10 +23668,14 @@ const CustomerApp = (() => {
                 <Icons.Plane size={21} />
               </div>
               <div>
-                <h2 className="font-bold text-slate-900">AIR Shipments</h2>
+                <h2 className="font-bold text-slate-900">
+                  {tr("AIR Shipments", "ដឹកជញ្ជូនផ្លូវអាកាស")}
+                </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Independent AIR tracking with a dedicated Indonesia → Cambodia
-                  workflow.
+                  {tr(
+                    "Independent AIR tracking with a dedicated Indonesia → Cambodia workflow.",
+                    "ការតាមដានផ្លូវអាកាសដាច់ដោយឡែក ពីឥណ្ឌូនេស៊ីមកកម្ពុជា។",
+                  )}
                 </p>
               </div>
             </div>
@@ -22864,7 +23687,7 @@ const CustomerApp = (() => {
                 onClick={() => setT(k)}
                 className={`px-4 h-9 rounded-full text-[13px] font-semibold whitespace-nowrap shrink-0 ${t === k ? "bg-blue-600 text-white" : "bg-white text-slate-600"}`}
               >
-                {k}
+                {TAB_TX[k] ? tr(...TAB_TX[k]) : airTx(lang, k)}
               </button>
             ))}
           </div>
@@ -22873,9 +23696,133 @@ const CustomerApp = (() => {
           ) : (
             <div className="text-center py-16 text-sm text-slate-400">
               {airShips.length
-                ? "No AIR shipments in this status."
-                : "No AIR shipments yet."}
+                ? tr(
+                    "No AIR shipments in this status.",
+                    "គ្មានការដឹកជញ្ជូនផ្លូវអាកាសក្នុងស្ថានភាពនេះទេ។",
+                  )
+                : tr(
+                    "No AIR shipments yet.",
+                    "មិនទាន់មានការដឹកជញ្ជូនផ្លូវអាកាសទេ។",
+                  )}
             </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  // ---------- Change password ----------
+  function ChangePassword() {
+    const { changePassword, say, me, logout, tr } = useApp();
+    const feat = useCustomerFeatures();
+    const nav = useNavigate();
+    const forced = !!me?.must_change_password;
+    const [f, setF] = useState({ cur: "", next: "", confirm: "" });
+    const [err, setErr] = useState("");
+    const [busy, setBusy] = useState(false);
+    const submit = async () => {
+      if (!f.cur)
+        return setErr(
+          tr(
+            "Please enter your current password.",
+            "សូមបញ្ចូលលេខសម្ងាត់បច្ចុប្បន្ន។",
+          ),
+        );
+      if (f.next.length < 6)
+        return setErr(
+          tr(
+            "New password must be at least 6 characters.",
+            "លេខសម្ងាត់ថ្មីត្រូវមានយ៉ាងតិច 6 តួអក្សរ។",
+          ),
+        );
+      if (f.next === f.cur)
+        return setErr(
+          tr(
+            "New password must be different from the current one.",
+            "លេខសម្ងាត់ថ្មីត្រូវខុសពីលេខសម្ងាត់បច្ចុប្បន្ន។",
+          ),
+        );
+      if (f.next !== f.confirm)
+        return setErr(
+          tr("New passwords do not match.", "លេខសម្ងាត់ថ្មីមិនត្រូវគ្នាទេ។"),
+        );
+      setBusy(true);
+      setErr("");
+      const e = await changePassword(f.cur, f.next);
+      setBusy(false);
+      if (e) return setErr(e);
+      say(tr("Password changed successfully", "បានប្តូរលេខសម្ងាត់ដោយជោគជ័យ"));
+      nav(P("/profile"), { replace: true });
+    };
+    // Voluntary change can be switched off by an admin; a forced one never is.
+    if (!forced && !feat("profile_password"))
+      return <Navigate to={P()} replace />;
+    return (
+      <>
+        <Top
+          title={
+            forced
+              ? tr("Set your password", "កំណត់លេខសម្ងាត់របស់អ្នក")
+              : tr("Change Password", "ប្តូរលេខសម្ងាត់")
+          }
+          back={!forced}
+        />
+        <div className="px-4 pt-5 space-y-4">
+          {forced && (
+            <p className="rounded-xl bg-amber-50 text-amber-800 text-sm px-3.5 py-3">
+              {tr(
+                "For your security, please choose your own new password before continuing.",
+                "ដើម្បីសុវត្ថិភាព សូមកំណត់លេខសម្ងាត់ផ្ទាល់ខ្លួនរបស់អ្នក មុនពេលបន្ត។",
+              )}
+            </p>
+          )}
+          <Card className="p-4 space-y-3.5">
+            <Field
+              label={
+                forced
+                  ? tr(
+                      "Temporary password (from staff)",
+                      "លេខសម្ងាត់បណ្ដោះអាសន្ន (ពីបុគ្គលិក)",
+                    )
+                  : tr("Current password", "លេខសម្ងាត់បច្ចុប្បន្ន")
+              }
+              icon={Lock}
+              pw
+              v={f.cur}
+              set={(v) => setF({ ...f, cur: v })}
+            />
+            <Field
+              label={tr("New password", "លេខសម្ងាត់ថ្មី")}
+              icon={Lock}
+              pw
+              v={f.next}
+              set={(v) => setF({ ...f, next: v })}
+            />
+            <Field
+              label={tr("Confirm new password", "បញ្ជាក់លេខសម្ងាត់ថ្មី")}
+              icon={Lock}
+              pw
+              v={f.confirm}
+              set={(v) => setF({ ...f, confirm: v })}
+            />
+            <p className="text-xs text-slate-500">
+              {tr("At least 6 characters.", "យ៉ាងតិច 6 តួអក្សរ។")}
+            </p>
+            {err && (
+              <p className="rounded-xl bg-red-50 text-red-600 text-sm font-medium px-3 py-2.5">
+                {err}
+              </p>
+            )}
+          </Card>
+          <Btn disabled={busy} onClick={submit}>
+            {busy
+              ? tr("Saving…", "កំពុងរក្សាទុក…")
+              : tr("Change Password", "ប្តូរលេខសម្ងាត់")}
+          </Btn>
+          {forced && (
+            <Btn ghost onClick={logout}>
+              {tr("Log out", "ចាកចេញ")}
+            </Btn>
           )}
         </div>
       </>
@@ -22884,7 +23831,7 @@ const CustomerApp = (() => {
 
   // ---------- Notifications (customer) ----------
   function CustomerNotifications() {
-    const { notifs, seenAt, markAllRead, unread, loading } = useApp();
+    const { notifs, seenAt, markAllRead, unread, loading, tr } = useApp();
     const nav = useNavigate();
     // Keep the "new" highlight while the page is open; mark read on leave.
     const [seenOnOpen] = useState(seenAt);
@@ -22896,7 +23843,7 @@ const CustomerApp = (() => {
     return (
       <>
         <Top
-          title="Notifications"
+          title={tr("Notifications", "ការជូនដំណឹង")}
           back
           right={
             unread > 0 ? (
@@ -22904,7 +23851,7 @@ const CustomerApp = (() => {
                 onClick={markAllRead}
                 className="text-xs font-semibold px-3 h-8 rounded-full bg-white/15"
               >
-                Mark all read
+                {tr("Mark all read", "សម្គាល់ថាបានអានទាំងអស់")}
               </button>
             ) : null
           }
@@ -22932,13 +23879,18 @@ const CustomerApp = (() => {
                   />
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-[14px] text-slate-900 leading-snug">
-                      {n.title}
+                      {tr(n.title[0], n.title[1])}
                     </p>
                     <p className="text-xs text-slate-500 mt-0.5 break-words">
                       {n.text}
+                      {n.reason
+                        ? ` · ${tr("Reason", "មូលហេតុ")}: ${n.reason}`
+                        : ""}
                     </p>
                     <p className="text-[11px] text-slate-400 mt-1">
-                      {n.kind === "air" ? "AIR · " : "China · "}
+                      {n.kind === "air"
+                        ? tr("AIR · ", "ផ្លូវអាកាស · ")
+                        : tr("China · ", "ចិន · ")}
                       {fmtDateTime(n.at)}
                     </p>
                   </div>
@@ -22951,7 +23903,7 @@ const CustomerApp = (() => {
           ) : (
             <div className="text-center py-20 text-sm text-slate-400">
               <Bell size={32} className="mx-auto mb-3 text-slate-300" />
-              មិនទាន់មានការជូនដំណឹងនៅឡើយទេ
+              {tr("No notifications yet", "មិនទាន់មានការជូនដំណឹងនៅឡើយទេ")}
             </div>
           )}
         </div>
@@ -22962,7 +23914,8 @@ const CustomerApp = (() => {
   // ---------- Tracking (customer view: status + dates ONLY) ----------
   function Detail() {
     const { tk } = useParams();
-    const { ships, wallet, payShipping, say } = useApp();
+    const { ships, wallet, payShipping, say, tr } = useApp();
+    const feat = useCustomerFeatures();
     const s = ships.find((x) => x.tk === tk);
     const [confirmPay, setConfirmPay] = useState(false);
     const [paying, setPaying] = useState(false);
@@ -22985,26 +23938,36 @@ const CustomerApp = (() => {
     if (!s)
       return (
         <>
-          <Top title="Shipment Detail" back />
-          <p className="text-center text-slate-400 py-16">No shipment found</p>
+          <Top
+            title={tr("Shipment Detail", "ព័ត៌មានលម្អិតនៃការដឹកជញ្ជូន")}
+            back
+          />
+          <p className="text-center text-slate-400 py-16">
+            {tr("No shipment found", "រកមិនឃើញការដឹកជញ្ជូនទេ")}
+          </p>
         </>
       );
     return (
       <>
-        <Top title="Shipment Detail" back />
+        <Top
+          title={tr("Shipment Detail", "ព័ត៌មានលម្អិតនៃការដឹកជញ្ជូន")}
+          back
+        />
         <div className="px-4 pt-4 space-y-4">
           <Card className="p-4 flex items-center gap-3">
             <Icon i={Package} />
             <div className="flex-1 min-w-0">
               <b>{s.tk}</b>
               <p className="text-[13px] text-slate-500">
-                Shop: {s.shop} · {s.desc}
+                {tr("Shop", "ហាង")}: {s.shop} · {s.desc}
               </p>
             </div>
             <Badge n={s.step} fee={s.fee} />
           </Card>
           <Card className="p-5">
-            <h2 className="font-bold mb-4">Tracking Status</h2>
+            <h2 className="font-bold mb-4">
+              {tr("Tracking Status", "ស្ថានភាពតាមដាន")}
+            </h2>
             {STEPS.map(([en, km], i) => {
               const done = i < s.step || s.step === 5,
                 cur = i === s.step && s.step < 5;
@@ -23026,12 +23989,12 @@ const CustomerApp = (() => {
                     <p
                       className={`font-semibold text-[15px] ${cur ? "text-blue-700" : done ? "text-slate-900" : "text-slate-400"}`}
                     >
-                      {en} <span className="font-normal text-xs">· {km}</span>
+                      {tr(en, km)}
                     </p>
                     <p className="text-xs text-slate-500">
                       {reached
                         ? fmtDate(reached[en]) === "—"
-                          ? "Pending"
+                          ? tr("Pending", "កំពុងរង់ចាំ")
                           : fmtDate(reached[en])
                         : "..."}
                     </p>
@@ -23040,41 +24003,53 @@ const CustomerApp = (() => {
               );
             })}
           </Card>
-          {s.step >= 4 && s.fee?.total > 0 && (
+          {feat("pay_shipping") && s.step >= 4 && s.fee?.total > 0 && (
             <Card className="p-5">
               <h2 className="font-bold mb-3 flex items-center gap-2">
-                <Wallet size={18} className="text-blue-600" /> Shipping Payment
+                <Wallet size={18} className="text-blue-600" />{" "}
+                {tr("Shipping Payment", "ការបង់ថ្លៃដឹក")}
               </h2>
               <div className="flex justify-between text-sm py-1">
-                <span className="text-slate-500">Shipping fee</span>
+                <span className="text-slate-500">
+                  {tr("Shipping fee", "ថ្លៃដឹក")}
+                </span>
                 <b>{money(s.fee.total)}</b>
               </div>
               {s.fee.state === "paid" ? (
                 <p className="mt-2 rounded-xl bg-green-50 text-green-700 text-sm font-semibold px-3 py-2.5 flex items-center gap-2">
-                  <Check size={16} /> Paid — ready for pickup
+                  <Check size={16} />{" "}
+                  {tr("Paid — ready for pickup", "បានបង់ប្រាក់ — ត្រៀមយក")}
                 </p>
               ) : (
                 <>
                   <div className="flex justify-between text-sm py-1">
-                    <span className="text-slate-500">Amount due</span>
+                    <span className="text-slate-500">
+                      {tr("Amount due", "ទឹកប្រាក់ត្រូវបង់")}
+                    </span>
                     <b className="text-red-600">{money(s.fee.due)}</b>
                   </div>
                   <div className="flex justify-between text-sm py-1">
-                    <span className="text-slate-500">My wallet</span>
+                    <span className="text-slate-500">
+                      {tr("My wallet", "កាបូបរបស់ខ្ញុំ")}
+                    </span>
                     <b className={wallet.balance < 0 ? "text-red-600" : ""}>
                       {moneyS(wallet.balance)}
                     </b>
                   </div>
                   {wallet.balance < s.fee.due ? (
                     <p className="mt-3 rounded-xl bg-amber-50 text-amber-700 text-xs px-3 py-2.5">
-                      Your wallet balance is not enough. You need{" "}
-                      {money(s.fee.due - wallet.balance)} more — please top up
-                      your wallet with our staff, then come back to pay.
+                      {tr(
+                        `Your wallet balance is not enough. You need ${money(s.fee.due - wallet.balance)} more — please top up your wallet with our staff, then come back to pay.`,
+                        `សមតុល្យកាបូបរបស់អ្នកមិនគ្រប់គ្រាន់ទេ។ អ្នកត្រូវការបន្ថែម ${money(s.fee.due - wallet.balance)} — សូមបញ្ចូលទឹកប្រាក់ក្នុងកាបូបជាមួយបុគ្គលិករបស់យើង រួចត្រឡប់មកបង់ម្តងទៀត។`,
+                      )}
                     </p>
                   ) : confirmPay ? (
                     <div className="mt-3 space-y-2">
                       <p className="text-sm text-slate-600">
-                        {money(s.fee.due)} will be deducted from your wallet.
+                        {tr(
+                          `${money(s.fee.due)} will be deducted from your wallet.`,
+                          `${money(s.fee.due)} នឹងត្រូវកាត់ចេញពីកាបូបរបស់អ្នក។`,
+                        )}
                       </p>
                       <div className="grid grid-cols-2 gap-2">
                         <Btn
@@ -23082,7 +24057,7 @@ const CustomerApp = (() => {
                           disabled={paying}
                           onClick={() => setConfirmPay(false)}
                         >
-                          Cancel
+                          {tr("Cancel", "បោះបង់")}
                         </Btn>
                         <Btn
                           disabled={paying}
@@ -23093,16 +24068,21 @@ const CustomerApp = (() => {
                             setPaying(false);
                             if (err) return setPayErr(err);
                             setConfirmPay(false);
-                            say("Payment successful");
+                            say(tr("Payment successful", "ការបង់ប្រាក់ជោគជ័យ"));
                           }}
                         >
-                          {paying ? "Paying…" : "Confirm"}
+                          {paying
+                            ? tr("Paying…", "កំពុងបង់…")
+                            : tr("Confirm", "បញ្ជាក់")}
                         </Btn>
                       </div>
                     </div>
                   ) : (
                     <Btn className="mt-3" onClick={() => setConfirmPay(true)}>
-                      Pay {money(s.fee.due)} from Wallet
+                      {tr(
+                        `Pay ${money(s.fee.due)} from Wallet`,
+                        `បង់ ${money(s.fee.due)} ពីកាបូប`,
+                      )}
                     </Btn>
                   )}
                   {payErr && (
@@ -23116,7 +24096,10 @@ const CustomerApp = (() => {
           )}
           <p className="flex gap-2 text-xs text-slate-500 bg-blue-50 rounded-xl p-3">
             <Info size={16} className="shrink-0 text-blue-500" />
-            Detailed staff and internal information is not visible to customers.
+            {tr(
+              "Detailed staff and internal information is not visible to customers.",
+              "ព័ត៌មានលម្អិតរបស់បុគ្គលិក និងព័ត៌មានផ្ទៃក្នុងមិនបង្ហាញដល់អតិថិជនទេ។",
+            )}
           </p>
         </div>
       </>
@@ -23126,7 +24109,7 @@ const CustomerApp = (() => {
   // ---------- AIR Shipment Detail ----------
   function AirDetail() {
     const { orderId } = useParams();
-    const { airShips } = useApp();
+    const { airShips, tr, lang } = useApp();
     const [row, setRow] = useState(
       () => airShips.find((x) => x.order_id === orderId) || null,
     );
@@ -23172,22 +24155,22 @@ const CustomerApp = (() => {
     if (loadingAir)
       return (
         <>
-          <Top title="AIR Shipment" back />
+          <Top title={tr("AIR Shipment", "ការដឹកជញ្ជូនផ្លូវអាកាស")} back />
           <CustomerAirSkeleton detail />
         </>
       );
     if (!row)
       return (
         <>
-          <Top title="AIR Shipment" back />
+          <Top title={tr("AIR Shipment", "ការដឹកជញ្ជូនផ្លូវអាកាស")} back />
           <p className="text-center text-slate-400 py-16">
-            AIR shipment not found
+            {tr("AIR shipment not found", "រកមិនឃើញការដឹកជញ្ជូនផ្លូវអាកាសទេ")}
           </p>
         </>
       );
     return (
       <>
-        <Top title="AIR Shipment" back />
+        <Top title={tr("AIR Shipment", "ការដឹកជញ្ជូនផ្លូវអាកាស")} back />
         <div className="px-4 pt-4 space-y-4">
           <Card className="p-4 flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 grid place-items-center">
@@ -23196,44 +24179,56 @@ const CustomerApp = (() => {
             <div className="flex-1 min-w-0">
               <b>{row.order_id}</b>
               <p className="text-[13px] text-slate-500">
-                AIR · {row.tk ? `TK ${row.tk}` : "TK pending"}
+                {tr("AIR", "ផ្លូវអាកាស")} ·{" "}
+                {row.tk ? `TK ${row.tk}` : tr("TK pending", "TK មិនទាន់មាន")}
               </p>
             </div>
             <AirCustomerBadge status={row.status} />
           </Card>
           <Card className="p-5">
-            <h2 className="font-bold mb-5">Shipment AIR Tracking</h2>
+            <h2 className="font-bold mb-5">
+              {tr("Shipment AIR Tracking", "ការតាមដានផ្លូវអាកាស")}
+            </h2>
             <AirStatusTimeline
               status={row.status}
               history={history}
               refundReason={row.refund_reason}
+              tr={tr}
+              lab={(x) => airTx(lang, x)}
+              fmt={fmtDateTime}
             />
           </Card>
           <Card className="p-5">
-            <h2 className="font-bold mb-4">Order Information</h2>
+            <h2 className="font-bold mb-4">
+              {tr("Order Information", "ព័ត៌មានការបញ្ជាទិញ")}
+            </h2>
             <div className="space-y-2 text-sm">
               <div className="flex justify-between gap-3">
-                <span className="text-slate-500">Shop Order ID</span>
+                <span className="text-slate-500">
+                  {tr("Shop Order ID", "លេខបញ្ជាទិញហាង")}
+                </span>
                 <b>{row.order_id}</b>
               </div>
               <div className="flex justify-between gap-3">
                 <span className="text-slate-500">TK</span>
-                <b>{row.tk || "Pending"}</b>
+                <b>{row.tk || tr("Pending", "កំពុងរង់ចាំ")}</b>
               </div>
               <div className="flex justify-between gap-3">
-                <span className="text-slate-500">Shop</span>
+                <span className="text-slate-500">{tr("Shop", "ហាង")}</span>
                 <b>{row.shop_name || "—"}</b>
               </div>
               <div className="flex justify-between gap-3">
-                <span className="text-slate-500">Product</span>
+                <span className="text-slate-500">{tr("Product", "ទំនិញ")}</span>
                 <b className="text-right">{row.product_name || "—"}</b>
               </div>
             </div>
           </Card>
           <p className="flex gap-2 text-xs text-slate-500 bg-blue-50 rounded-xl p-3">
-            <Info size={16} className="shrink-0 text-blue-500" /> AIR tracking
-            uses a separate status flow and does not expose staff/scanner
-            information.
+            <Info size={16} className="shrink-0 text-blue-500" />
+            {tr(
+              "AIR tracking uses a separate status flow and does not expose staff/scanner information.",
+              "ការតាមដានផ្លូវអាកាសប្រើដំណើរការស្ថានភាពដាច់ដោយឡែក ហើយមិនបង្ហាញព័ត៌មានបុគ្គលិក ឬម៉ាស៊ីនស្កេនទេ។",
+            )}
           </p>
         </div>
       </>
@@ -23242,7 +24237,7 @@ const CustomerApp = (() => {
 
   // ---------- Wallet ----------
   function WalletPage() {
-    const { wallet, refreshMoney } = useApp();
+    const { wallet, refreshMoney, tr } = useApp();
     useEffect(() => {
       refreshMoney();
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -23259,28 +24254,36 @@ const CustomerApp = (() => {
       });
     }, [wallet]);
     const label = {
-      top_up: "Top up",
-      shipping_payment: "Shipping payment",
-      shipping_payment_cash: "Shipping paid (cash)",
+      top_up: tr("Top up", "បញ្ចូលទឹកប្រាក់"),
+      shipping_payment: tr("Shipping payment", "ការបង់ថ្លៃដឹក"),
+      shipping_payment_cash: tr(
+        "Shipping paid (cash)",
+        "បានបង់ថ្លៃដឹក (សាច់ប្រាក់)",
+      ),
     };
     return (
       <>
-        <Top title="My Wallet" back />
+        <Top title={tr("My Wallet", "កាបូបរបស់ខ្ញុំ")} back />
         <div className="px-4 pt-4 space-y-4">
           <Card className="p-5 bg-gradient-to-br from-blue-600 to-blue-700 text-white">
-            <p className="text-sm text-blue-100">Available balance</p>
+            <p className="text-sm text-blue-100">
+              {tr("Available balance", "សមតុល្យដែលមាន")}
+            </p>
             <p className="text-3xl font-extrabold mt-1">
               {moneyS(wallet.balance)}
             </p>
           </Card>
           {wallet.balance < 0 && (
             <p className="rounded-xl bg-red-50 text-red-700 text-xs font-semibold px-3 py-2.5">
-              Your balance is negative. Please top up{" "}
-              {moneyS(Math.abs(wallet.balance))} or more with our staff to cover
-              it before your next payment.
+              {tr(
+                `Your balance is negative. Please top up ${moneyS(Math.abs(wallet.balance))} or more with our staff to cover it before your next payment.`,
+                `សមតុល្យរបស់អ្នកអវិជ្ជមាន។ សូមបញ្ចូលទឹកប្រាក់ ${moneyS(Math.abs(wallet.balance))} ឬច្រើនជាងនេះជាមួយបុគ្គលិករបស់យើង មុនការបង់ប្រាក់លើកក្រោយ។`,
+              )}
             </p>
           )}
-          <h2 className="font-bold">Transaction History</h2>
+          <h2 className="font-bold">
+            {tr("Transaction History", "ប្រវត្តិប្រតិបត្តិការ")}
+          </h2>
           <Card className="divide-y divide-slate-100">
             {rows.map((t) => {
               const n = Number(t.amount) || 0;
@@ -23303,7 +24306,7 @@ const CustomerApp = (() => {
                       {money(Math.abs(n))}
                     </p>
                     <p className="text-[11px] text-slate-400">
-                      Bal {moneyS(t._after)}
+                      {tr("Bal", "សមតុល្យ")} {moneyS(t._after)}
                     </p>
                   </div>
                 </div>
@@ -23311,7 +24314,7 @@ const CustomerApp = (() => {
             })}
             {!wallet.tx.length && (
               <p className="text-center text-sm text-slate-400 py-8">
-                No transactions yet
+                {tr("No transactions yet", "មិនទាន់មានប្រតិបត្តិការទេ")}
               </p>
             )}
           </Card>
@@ -23322,7 +24325,7 @@ const CustomerApp = (() => {
 
   // ---------- China warehouse ----------
   function ChinaWH() {
-    const { say } = useApp();
+    const { say, tr } = useApp();
     const [wh, setWh] = useState(undefined); // undefined = loading, null = none assigned
     useEffect(() => {
       if (!supabase) return;
@@ -23335,16 +24338,21 @@ const CustomerApp = (() => {
     if (wh === undefined)
       return (
         <>
-          <Top title="My China Warehouse" back />
-          <p className="text-center text-slate-400 py-16">Loading...</p>
+          <Top title={tr("My China Warehouse", "ឃ្លាំងចិនរបស់ខ្ញុំ")} back />
+          <p className="text-center text-slate-400 py-16">
+            {tr("Loading...", "កំពុងផ្ទុក...")}
+          </p>
         </>
       );
     if (!wh)
       return (
         <>
-          <Top title="My China Warehouse" back />
+          <Top title={tr("My China Warehouse", "ឃ្លាំងចិនរបស់ខ្ញុំ")} back />
           <p className="text-center text-slate-400 py-16">
-            មិនទាន់បានកំណត់ឃ្លាំងចិន សូមទាក់ទងផ្នែកជំនួយ
+            {tr(
+              "No China warehouse has been assigned yet. Please contact support.",
+              "មិនទាន់បានកំណត់ឃ្លាំងចិនទេ សូមទាក់ទងផ្នែកជំនួយ។",
+            )}
           </p>
         </>
       );
@@ -23360,11 +24368,14 @@ const CustomerApp = (() => {
     const text = `${wh.recipient_name}\n${wh.phone}\n${wh.province} ${wh.city} ${wh.district}\n${wh.address}\nCustomer Code: ${wh.customer_code}`;
     return (
       <>
-        <Top title="My China Warehouse" back />
+        <Top title={tr("My China Warehouse", "ឃ្លាំងចិនរបស់ខ្ញុំ")} back />
         <div className="px-4 pt-4 space-y-4">
           <Card className="p-4">
             <p className="text-sm text-slate-500 mb-3">
-              ចម្លងអាសយដ្ឋាននេះ ហើយផ្ញើទៅអ្នកលក់ចិនរបស់អ្នក។
+              {tr(
+                "Copy this address and send it to your Chinese seller.",
+                "ចម្លងអាសយដ្ឋាននេះ ហើយផ្ញើទៅអ្នកលក់ចិនរបស់អ្នក។",
+              )}
             </p>
             <div className="rounded-xl bg-slate-50 divide-y divide-slate-100">
               {rows.map(([k, v]) => (
@@ -23372,7 +24383,9 @@ const CustomerApp = (() => {
                   key={k}
                   className="flex justify-between gap-4 px-3.5 py-2.5 text-[13px]"
                 >
-                  <span className="text-slate-500 shrink-0">{k}</span>
+                  <span className="text-slate-500 shrink-0">
+                    {tr(...WH_LBL[k])}
+                  </span>
                   <span
                     className={`text-right font-semibold ${k === "Customer Code" ? "text-blue-700" : ""}`}
                   >
@@ -23385,27 +24398,28 @@ const CustomerApp = (() => {
           <Btn
             onClick={() => {
               copy(text);
-              say("បានចម្លងអាសយដ្ឋាន");
+              say(tr("Address copied", "បានចម្លងអាសយដ្ឋាន"));
             }}
           >
             <Copy size={18} />
-            Copy Address
+            {tr("Copy Address", "ចម្លងអាសយដ្ឋាន")}
           </Btn>
           <Btn
             ghost
             onClick={() => {
               copy(wh.customer_code);
-              say("បានចម្លង Customer Code");
+              say(tr("Customer code copied", "បានចម្លងកូដអតិថិជន"));
             }}
           >
             <Copy size={18} />
-            Copy Customer Code
+            {tr("Copy Customer Code", "ចម្លងកូដអតិថិជន")}
           </Btn>
           <p className="flex gap-2 text-xs text-slate-600 bg-blue-50 rounded-xl p-3">
             <Info size={16} className="shrink-0 text-blue-500" />
-            Copy this address and send it to your Chinese supplier so they can
-            ship your goods to our China warehouse. សូមប្រើ Customer Code (
-            {wh.customer_code}) ពេលបញ្ជូនទំនិញ។
+            {tr(
+              `Copy this address and send it to your Chinese supplier so they can ship your goods to our China warehouse. Please use your Customer Code (${wh.customer_code}) when shipping.`,
+              `ចម្លងអាសយដ្ឋាននេះ ហើយផ្ញើទៅអ្នកផ្គត់ផ្គង់ចិនរបស់អ្នក ដើម្បីឱ្យគេដឹកទំនិញមកឃ្លាំងចិនរបស់យើង។ សូមប្រើកូដអតិថិជន (${wh.customer_code}) ពេលបញ្ជូនទំនិញ។`,
+            )}
           </p>
         </div>
       </>
@@ -23433,6 +24447,7 @@ const CustomerApp = (() => {
   // Select from the areas that really have a branch; "Other" lets the
   // customer type a place that has no branch yet.
   function LocPick({ label, value, options, onPick, disabled, ph }) {
+    const { tr } = useApp();
     const [other, setOther] = useState(false);
     const typed = other || (value && !options.includes(value));
     const box =
@@ -23458,7 +24473,7 @@ const CustomerApp = (() => {
                 }}
                 className="px-3 rounded-xl border border-slate-200 bg-white text-xs text-blue-600 shrink-0"
               >
-                បញ្ជី
+                {tr("List", "បញ្ជី")}
               </button>
             )}
           </div>
@@ -23474,20 +24489,22 @@ const CustomerApp = (() => {
             }}
             className={box}
           >
-            <option value="">— ជ្រើសរើស —</option>
+            <option value="">— {tr("Select", "ជ្រើសរើស")} —</option>
             {options.map((o) => (
               <option key={o} value={o}>
                 {o}
               </option>
             ))}
-            <option value="__other">ផ្សេងទៀត (វាយខ្លួនឯង)</option>
+            <option value="__other">
+              {tr("Other (type it in)", "ផ្សេងទៀត (វាយខ្លួនឯង)")}
+            </option>
           </select>
         )}
       </label>
     );
   }
   function Addresses() {
-    const { addrs, branches, branchErr, saveAddr, delAddr, setDef, say } =
+    const { addrs, branches, branchErr, saveAddr, delAddr, setDef, say, tr } =
       useApp();
     const [ed, setEd] = useState(null);
     const [busy, setBusy] = useState(false);
@@ -23548,14 +24565,14 @@ const CustomerApp = (() => {
     return (
       <>
         <Top
-          title="My Addresses"
+          title={tr("My Addresses", "អាសយដ្ឋានរបស់ខ្ញុំ")}
           right={
             <button
               onClick={() => setEd({ ...EMPTY })}
               className="h-9 px-3 rounded-full bg-white text-blue-700 text-sm font-semibold flex items-center gap-1"
             >
               <Plus size={16} />
-              Add New
+              {tr("Add New", "បន្ថែមថ្មី")}
             </button>
           }
         />
@@ -23566,10 +24583,10 @@ const CustomerApp = (() => {
                 <Icon i={a.label === "Office" ? Warehouse : Home} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <b>{a.label || "Address"}</b>
+                    <b>{a.label || tr("Address", "អាសយដ្ឋាន")}</b>
                     {a.def && (
                       <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700">
-                        Default
+                        {tr("Default", "លំនាំដើម")}
                       </span>
                     )}
                   </div>
@@ -23588,7 +24605,7 @@ const CustomerApp = (() => {
                   )}
                   {a.note && (
                     <p className="text-xs text-slate-400 mt-1">
-                      Note: {a.note}
+                      {tr("Note", "កំណត់ចំណាំ")}: {a.note}
                     </p>
                   )}
                 </div>
@@ -23598,11 +24615,11 @@ const CustomerApp = (() => {
                   <button
                     onClick={() => {
                       setDef(a.id);
-                      say("បានកំណត់ជា Default");
+                      say(tr("Set as default", "បានកំណត់ជាលំនាំដើម"));
                     }}
                     className="text-[13px] font-semibold text-blue-600 mr-auto"
                   >
-                    Set as Default
+                    {tr("Set as Default", "កំណត់ជាលំនាំដើម")}
                   </button>
                 )}
                 <span className="flex-1" />
@@ -23615,10 +24632,13 @@ const CustomerApp = (() => {
                 <button
                   onClick={async () => {
                     const ok = await confirmDialog({
-                      title: "លុបអាសយដ្ឋាននេះ?",
-                      message: "សកម្មភាពនេះមិនអាចត្រឡប់វិញបានទេ។",
-                      confirmText: "លុប",
-                      cancelText: "បោះបង់",
+                      title: tr("Delete this address?", "លុបអាសយដ្ឋាននេះ?"),
+                      message: tr(
+                        "This action cannot be undone.",
+                        "សកម្មភាពនេះមិនអាចត្រឡប់វិញបានទេ។",
+                      ),
+                      confirmText: tr("Delete", "លុប"),
+                      cancelText: tr("Cancel", "បោះបង់"),
                     });
                     if (ok) delAddr(a.id);
                   }}
@@ -23631,7 +24651,10 @@ const CustomerApp = (() => {
           ))}
           {!addrs.length && (
             <p className="text-center text-sm text-slate-400 py-10">
-              មិនទាន់មានអាសយដ្ឋាន — ចុច Add New
+              {tr(
+                "No addresses yet — tap Add New",
+                "មិនទាន់មានអាសយដ្ឋាន — ចុច «បន្ថែមថ្មី»",
+              )}
             </p>
           )}
         </div>
@@ -23647,44 +24670,58 @@ const CustomerApp = (() => {
             >
               <div className="flex justify-between items-center">
                 <h2 className="font-bold text-lg">
-                  {ed.id ? "Edit Address" : "Add Address"}
+                  {ed.id
+                    ? tr("Edit Address", "កែប្រែអាសយដ្ឋាន")
+                    : tr("Add Address", "បន្ថែមអាសយដ្ឋាន")}
                 </h2>
                 <button onClick={() => setEd(null)}>
                   <X size={22} />
                 </button>
               </div>
               <Field
-                label="Label"
-                ph="Home / Office"
+                label={tr("Label", "ឈ្មោះអាសយដ្ឋាន")}
+                ph={tr("Home / Office", "ផ្ទះ / ការិយាល័យ")}
                 v={ed.label}
                 set={s("label")}
               />
-              <Field label="Full Name" v={ed.name} set={s("name")} />
-              <Field label="Phone Number" v={ed.phone} set={s("phone")} />
+              <Field
+                label={tr("Full Name", "ឈ្មោះពេញ")}
+                v={ed.name}
+                set={s("name")}
+              />
+              <Field
+                label={tr("Phone Number", "លេខទូរស័ព្ទ")}
+                v={ed.phone}
+                set={s("phone")}
+              />
               <LocPick
-                label="Province"
+                label={tr("Province", "ខេត្ត/ក្រុង")}
                 value={ed.province}
                 options={provinces}
                 onPick={(v) => setLoc({ province: v })}
               />
               <LocPick
-                label="District"
+                label={tr("District", "ស្រុក/ខណ្ឌ")}
                 value={ed.district}
                 options={districts}
                 disabled={!ed.province}
                 onPick={(v) => setLoc({ district: v })}
               />
               <LocPick
-                label="Commune"
+                label={tr("Commune", "ឃុំ/សង្កាត់")}
                 value={ed.commune}
                 options={communes}
                 disabled={!ed.district}
                 onPick={(v) => setLoc({ commune: v })}
               />
-              <Field label="Detailed Address" v={ed.addr} set={s("addr")} />
+              <Field
+                label={tr("Detailed Address", "អាសយដ្ឋានលម្អិត")}
+                v={ed.addr}
+                set={s("addr")}
+              />
               <div>
                 <p className="text-[13px] font-medium text-slate-600 mb-1">
-                  Nearby Receiving Warehouse{" "}
+                  {tr("Nearby Receiving Warehouse", "ឃ្លាំងទទួលនៅជិត")}{" "}
                   <span className="text-red-500">*</span>
                 </p>
                 <button
@@ -23701,7 +24738,7 @@ const CustomerApp = (() => {
                   >
                     {ed.branch
                       ? branchOf(ed.branch)?.name || ed.branch
-                      : "Select Nearby Warehouse"}
+                      : tr("Select Nearby Warehouse", "ជ្រើសរើសឃ្លាំងនៅជិត")}
                   </span>
                   <ChevronRight size={18} className="text-slate-400" />
                 </button>
@@ -23710,19 +24747,30 @@ const CustomerApp = (() => {
                   if (ed.branch && m.length === 1 && m[0].code === ed.branch)
                     return (
                       <p className="text-[11px] text-green-700 mt-1">
-                        ✓ ជ្រើសសាខាដោយស្វ័យប្រវត្តិតាមតំបន់របស់អ្នក
+                        {"✓ "}
+                        {tr(
+                          "Branch selected automatically for your area",
+                          "ជ្រើសសាខាដោយស្វ័យប្រវត្តិតាមតំបន់របស់អ្នក",
+                        )}
                       </p>
                     );
                   if (!ed.branch && m.length > 1)
                     return (
                       <p className="text-[11px] text-orange-600 mt-1">
-                        មាន {m.length} សាខាក្នុងតំបន់នេះ — សូមជ្រើសមួយ
+                        {tr(
+                          `${m.length} branches serve this area — please pick one`,
+                          `មាន ${m.length} សាខាក្នុងតំបន់នេះ — សូមជ្រើសមួយ`,
+                        )}
                       </p>
                     );
                   return null;
                 })()}
               </div>
-              <Field label="Delivery Note" v={ed.note} set={s("note")} />
+              <Field
+                label={tr("Delivery Note", "កំណត់ចំណាំសម្រាប់ដឹកជញ្ជូន")}
+                v={ed.note}
+                set={s("note")}
+              />
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -23730,7 +24778,7 @@ const CustomerApp = (() => {
                   onChange={(e) => setEd({ ...ed, def: e.target.checked })}
                   className="w-4 h-4"
                 />
-                Set as Default
+                {tr("Set as Default", "កំណត់ជាលំនាំដើម")}
               </label>
               <Btn
                 disabled={busy || !ed.name || !ed.phone || !ed.branch}
@@ -23739,10 +24787,10 @@ const CustomerApp = (() => {
                   await saveAddr(ed);
                   setBusy(false);
                   setEd(null);
-                  say("បានSave");
+                  say(tr("Saved", "បានរក្សាទុក"));
                 }}
               >
-                Save Address
+                {tr("Save Address", "រក្សាទុកអាសយដ្ឋាន")}
               </Btn>
             </div>
           </div>
@@ -23758,7 +24806,9 @@ const CustomerApp = (() => {
               style={FONT}
             >
               <div className="flex justify-between items-center">
-                <h2 className="font-bold text-lg">Select Nearby Warehouse</h2>
+                <h2 className="font-bold text-lg">
+                  {tr("Select Nearby Warehouse", "ជ្រើសរើសឃ្លាំងនៅជិត")}
+                </h2>
                 <button onClick={() => setPickBranch(false)}>
                   <X size={22} />
                 </button>
@@ -23766,6 +24816,7 @@ const CustomerApp = (() => {
               <input
                 value={bq}
                 onChange={(e) => setBq(e.target.value)}
+                placeholder={tr("Search warehouse", "ស្វែងរកឃ្លាំង")}
                 className="h-11 px-3 rounded-xl border border-slate-200 bg-white text-sm outline-none"
               />
               <div className="flex-1 overflow-y-auto space-y-2">
@@ -23789,10 +24840,14 @@ const CustomerApp = (() => {
                     return (
                       <p className="text-center text-sm text-slate-400 py-10 px-4">
                         {branchErr
-                          ? "Unable to load branch list — សូមឱ្យ Admin ត្រួតពិនិត្យ permission លើតារាង warehouses (" +
-                            branchErr +
-                            ")"
-                          : "No active receiving branches available."}
+                          ? tr(
+                              `Unable to load the branch list. Please contact support. (${branchErr})`,
+                              `មិនអាចទាញយកបញ្ជីសាខាបានទេ សូមទាក់ទងផ្នែកជំនួយ (${branchErr})`,
+                            )
+                          : tr(
+                              "No active receiving branches available.",
+                              "មិនមានសាខាទទួលដែលកំពុងដំណើរការទេ។",
+                            )}
                       </p>
                     );
                   return list.map((b) => (
@@ -23838,28 +24893,52 @@ const CustomerApp = (() => {
 
   // ---------- Profile ----------
   function Profile() {
-    const { me, addrs, logout } = useApp();
+    const { me, addrs, logout, tr, lang } = useApp();
     const nav = useNavigate();
+    const [langOpen, setLangOpen] = useState(false);
     const def = addrs.find((a) => a.def);
+    const feat = useCustomerFeatures();
     const info = [
-      ["Full Name", me.name],
-      ["Phone Number", me.phone],
-      ["Email", me.email || "—"],
+      [tr("Full Name", "ឈ្មោះពេញ"), me.name],
+      [tr("Phone Number", "លេខទូរស័ព្ទ"), me.phone],
+      [tr("Email", "អ៊ីមែល"), me.email || "—"],
       [
-        "Default Address",
+        tr("Default Address", "អាសយដ្ឋានលំនាំដើម"),
         def ? [def.district, def.province].filter(Boolean).join(", ") : "—",
       ],
     ];
     const links = [
-      [Wallet, "My Wallet", () => nav(P("/wallet"))],
-      [Warehouse, "My China Warehouse", () => nav(P("/warehouse"))],
-      [Lock, "Change Password"],
-      [Bell, "Notification Settings"],
-      [HelpCircle, "Help & Support"],
+      ...(feat("wallet")
+        ? [[Wallet, tr("My Wallet", "កាបូបរបស់ខ្ញុំ"), () => nav(P("/wallet"))]]
+        : []),
+      ...(feat("warehouse")
+        ? [
+            [
+              Warehouse,
+              tr("My China Warehouse", "ឃ្លាំងចិនរបស់ខ្ញុំ"),
+              () => nav(P("/warehouse")),
+            ],
+          ]
+        : []),
+      ...(feat("profile_password")
+        ? [
+            [
+              Lock,
+              tr("Change Password", "ប្តូរលេខសម្ងាត់"),
+              () => nav(P("/change-password")),
+            ],
+          ]
+        : []),
+      ...(feat("profile_notif_settings")
+        ? [[Bell, tr("Notification Settings", "ការកំណត់ការជូនដំណឹង")]]
+        : []),
+      ...(feat("profile_help")
+        ? [[HelpCircle, tr("Help & Support", "ជំនួយ និងការគាំទ្រ")]]
+        : []),
     ];
     return (
       <>
-        <Top title="Profile" />
+        <Top title={tr("Profile", "គណនី")} />
         <div className="px-4 pt-5 space-y-4">
           <div className="text-center">
             <span className="w-20 h-20 mx-auto rounded-full bg-blue-600 text-white text-3xl font-bold grid place-items-center">
@@ -23867,7 +24946,8 @@ const CustomerApp = (() => {
             </span>
             <p className="font-bold text-lg mt-2">{me.name}</p>
             <p className="text-xs text-slate-500">
-              Customer ID: {me.customer_code || "—"}
+              {tr("Customer ID", "លេខសម្គាល់អតិថិជន")}:{" "}
+              {me.customer_code || "—"}
             </p>
           </div>
           <Card className="divide-y divide-slate-100">
@@ -23894,13 +24974,37 @@ const CustomerApp = (() => {
               </button>
             ))}
           </Card>
+          <Card>
+            <button
+              type="button"
+              onClick={() => setLangOpen(true)}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-sm font-medium"
+            >
+              <span className="w-[18px] text-center text-base">
+                {lang === "km" ? "🇰🇭" : "🇬🇧"}
+              </span>
+              <span className="flex-1 text-left">{tr("Language", "ភាសា")}</span>
+              <span className="text-slate-400 text-[13px]">
+                {lang === "km" ? "ភាសាខ្មែរ" : "English"}
+              </span>
+              <ChevronRight size={16} className="text-slate-300" />
+            </button>
+          </Card>
+          {langOpen && <LangSheet onClose={() => setLangOpen(false)} />}
           <Btn danger onClick={logout}>
             <LogOut size={18} />
-            Log Out
+            {tr("Log Out", "ចាកចេញ")}
           </Btn>
         </div>
       </>
     );
+  }
+
+  // ---------- Feature gate ----------
+  // A switched-off feature (Customers › Customer Features) bounces to Home.
+  function Gate({ k, children }) {
+    const feat = useCustomerFeatures();
+    return feat(k) ? children : <Navigate to={P()} replace />;
   }
 
   // ---------- Root ----------
@@ -23913,14 +25017,71 @@ const CustomerApp = (() => {
           <Route path="login" element={<Auth />} />
           <Route element={<Shell />}>
             <Route index element={<HomePage />} />
-            <Route path="shipments" element={<Shipments />} />
-            <Route path="shipments/:tk" element={<Detail />} />
-            <Route path="notifications" element={<CustomerNotifications />} />
-            <Route path="air-shipments" element={<CustomerAirShipments />} />
-            <Route path="air-shipments/:orderId" element={<AirDetail />} />
-            <Route path="warehouse" element={<ChinaWH />} />
-            <Route path="wallet" element={<WalletPage />} />
-            <Route path="addresses" element={<Addresses />} />
+            <Route
+              path="shipments"
+              element={
+                <Gate k="tab_shipments">
+                  <Shipments />
+                </Gate>
+              }
+            />
+            <Route
+              path="shipments/:tk"
+              element={
+                <Gate k="tab_shipments">
+                  <Detail />
+                </Gate>
+              }
+            />
+            <Route
+              path="notifications"
+              element={
+                <Gate k="notifications">
+                  <CustomerNotifications />
+                </Gate>
+              }
+            />
+            <Route
+              path="air-shipments"
+              element={
+                <Gate k="tab_air">
+                  <CustomerAirShipments />
+                </Gate>
+              }
+            />
+            <Route
+              path="air-shipments/:orderId"
+              element={
+                <Gate k="tab_air">
+                  <AirDetail />
+                </Gate>
+              }
+            />
+            <Route
+              path="warehouse"
+              element={
+                <Gate k="warehouse">
+                  <ChinaWH />
+                </Gate>
+              }
+            />
+            <Route
+              path="wallet"
+              element={
+                <Gate k="wallet">
+                  <WalletPage />
+                </Gate>
+              }
+            />
+            <Route
+              path="addresses"
+              element={
+                <Gate k="tab_address">
+                  <Addresses />
+                </Gate>
+              }
+            />
+            <Route path="change-password" element={<ChangePassword />} />
             <Route path="profile" element={<Profile />} />
           </Route>
           <Route path="*" element={<Navigate to={P()} replace />} />
@@ -23931,6 +25092,486 @@ const CustomerApp = (() => {
 
   return CustomerApp;
 })();
+
+// ------------------------------------------------------------
+// pages/CustomerFeatures.jsx — Customer Roles × Feature permission matrix
+// ------------------------------------------------------------
+const CUSTOMER_FEATURES_SQL = `create table if not exists customer_features (
+  key text primary key,
+  enabled boolean not null default true,
+  updated_at timestamptz default now()
+);
+create table if not exists customer_roles (
+  name text primary key,
+  description text,
+  is_system boolean default false,
+  denied_features text[] not null default '{}',
+  updated_at timestamptz default now()
+);
+alter table customers add column if not exists customer_role text default 'Standard';
+alter table customer_features enable row level security;
+alter table customer_roles enable row level security;
+create policy "customer_features read" on customer_features
+  for select to authenticated using (true);
+create policy "customer_roles read" on customer_roles
+  for select to authenticated using (true);
+create policy "customer_features write" on customer_features
+  for all to authenticated
+  using (exists (select 1 from users u where u.auth_user_id = auth.uid() and u.role = 'Super Admin'))
+  with check (exists (select 1 from users u where u.auth_user_id = auth.uid() and u.role = 'Super Admin'));
+create policy "customer_roles write" on customer_roles
+  for all to authenticated
+  using (exists (select 1 from users u where u.auth_user_id = auth.uid() and u.role = 'Super Admin'))
+  with check (exists (select 1 from users u where u.auth_user_id = auth.uid() and u.role = 'Super Admin'));`;
+
+function CustomerFeaturesPage() {
+  const { user } = useAuth();
+  const canManage = hasPermission(user, "role.manage");
+  const storeRoles = useCustomerRoles();
+  const masterDisabled = customerFeatureStore.disabled;
+  const [draft, setDraft] = useState(null); // { master:{key:bool}, roles:[...] }
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [server, setServer] = useState(null); // null = checking
+  const [rolesServer, setRolesServer] = useState(null);
+  const [newOpen, setNewOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [copyFrom, setCopyFrom] = useState(DEFAULT_CUSTOMER_ROLE);
+  const [newErr, setNewErr] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    syncCustomerFeaturesFromServer().then((ok) => {
+      if (!alive) return;
+      setServer(ok);
+      setRolesServer(customerFeatureStore.rolesServer);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const current = {
+    master: Object.fromEntries(
+      CUSTOMER_FEATURES.map((f) => [f.key, !masterDisabled[f.key]]),
+    ),
+    roles: storeRoles,
+  };
+  const view = draft || current;
+  const sig = (d) =>
+    JSON.stringify([
+      CUSTOMER_FEATURES.map((f) => !!d.master[f.key]),
+      d.roles.map((r) => [r.name, [...r.denied].sort()]),
+    ]);
+  const dirty = !!draft && sig(draft) !== sig(current);
+  const groups = [...new Set(CUSTOMER_FEATURES.map((f) => f.group))];
+  const cols = view.roles;
+
+  const edit = (fn) => setDraft((d) => fn(d || structuredCloneSafe(current)));
+  function structuredCloneSafe(v) {
+    return JSON.parse(JSON.stringify(v));
+  }
+  const toggleMaster = (key) =>
+    edit((d) => ({ ...d, master: { ...d.master, [key]: !d.master[key] } }));
+  const toggleRole = (roleName, key) =>
+    edit((d) => ({
+      ...d,
+      roles: d.roles.map((r) =>
+        r.name !== roleName
+          ? r
+          : {
+              ...r,
+              denied: r.denied.includes(key)
+                ? r.denied.filter((k) => k !== key)
+                : [...r.denied, key],
+            },
+      ),
+    }));
+  // Whole-row / whole-column helpers
+  const setRoleAll = (roleName, allowed) =>
+    edit((d) => ({
+      ...d,
+      roles: d.roles.map((r) =>
+        r.name !== roleName
+          ? r
+          : {
+              ...r,
+              denied: allowed
+                ? []
+                : CUSTOMER_FEATURES.filter((f) => !f.locked).map((f) => f.key),
+            },
+      ),
+    }));
+  const removeRole = (roleName) =>
+    edit((d) => ({ ...d, roles: d.roles.filter((r) => r.name !== roleName) }));
+
+  function createRole(e) {
+    e.preventDefault();
+    const name = newName.trim();
+    if (!name) return setNewErr("សូមបញ្ចូលឈ្មោះ Role");
+    if (view.roles.some((r) => r.name.toLowerCase() === name.toLowerCase()))
+      return setNewErr("ឈ្មោះ Role នេះមានរួចហើយ");
+    const src = view.roles.find((r) => r.name === copyFrom);
+    edit((d) => ({
+      ...d,
+      roles: [
+        ...d.roles,
+        {
+          name,
+          description: "",
+          system: false,
+          denied: [...(src?.denied || [])],
+        },
+      ],
+    }));
+    setNewName("");
+    setNewErr("");
+    setNewOpen(false);
+  }
+
+  async function save() {
+    if (!canManage || !dirty) return;
+    setSaving(true);
+    const disabled = {};
+    CUSTOMER_FEATURES.forEach((f) => {
+      if (!f.locked && draft.master[f.key] === false) disabled[f.key] = true;
+    });
+    const removed = current.roles
+      .map((r) => r.name)
+      .filter((n) => !draft.roles.some((r) => r.name === n));
+    try {
+      const f1 = await saveCustomerFeatures(disabled);
+      const f2 = await saveCustomerRoles(draft.roles, removed);
+      const error = f1.error || f2.error;
+      if (error) {
+        setMsg({
+          type: "err",
+          text:
+            "Save to server failed — " +
+            (error.message || "unknown error") +
+            " (run the SQL below?)",
+        });
+      } else {
+        setDraft(null);
+        setMsg(
+          f1.local
+            ? {
+                type: "warn",
+                text: "Saved in this browser only (no Supabase).",
+              }
+            : { type: "ok", text: "Customer features & roles updated." },
+        );
+        setServer(!f1.local);
+        setRolesServer(!f2.local);
+      }
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMsg(null), 5000);
+    }
+  }
+
+  const msgCls = {
+    ok: "bg-emerald-50 text-emerald-700",
+    warn: "bg-amber-50 text-amber-700",
+    err: "bg-signal-red/10 text-signal-red",
+  };
+  const th =
+    "sticky top-0 z-10 bg-mist-50 border-b border-mist-200 px-3 py-3 text-center font-semibold text-ink-900 whitespace-nowrap";
+  const cb =
+    "w-4 h-4 rounded accent-blue-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50";
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="font-display font-bold text-xl text-ink-900">
+            Customer Features
+          </h1>
+          <p className="text-sm text-ink-600/55 mt-0.5">
+            Customer Role = feature ណាដែលភ្ញៀវប្រើបាន · Master =
+            បិទសម្រាប់ភ្ញៀវទាំងអស់
+          </p>
+        </div>
+        {canManage && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setNewOpen((v) => !v)}
+              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-md bg-mist-100 text-ink-700 hover:bg-mist-200"
+            >
+              <Icons.Plus size={15} /> Create Role
+            </button>
+            <button
+              onClick={() => setDraft(null)}
+              disabled={!dirty}
+              className="text-sm px-3 py-2 rounded-md bg-mist-100 text-ink-700 hover:bg-mist-200 disabled:opacity-40"
+            >
+              Discard
+            </button>
+            <button
+              onClick={save}
+              disabled={!dirty || saving}
+              className="text-sm font-medium px-3.5 py-2 rounded-md bg-signal-blue text-white hover:bg-signal-blue/90 disabled:opacity-40"
+            >
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {!canManage && (
+        <div className="flex items-center gap-2 text-sm text-ink-700 bg-mist-100 rounded-md px-3 py-2">
+          <Icons.Lock size={14} />
+          View only — មានតែ Super Admin ទេដែលអាចកែ Customer Role និង Feature។
+        </div>
+      )}
+      {msg && (
+        <div className={`text-sm rounded-md px-3 py-2 ${msgCls[msg.type]}`}>
+          {msg.text}
+        </div>
+      )}
+      {(server === false || rolesServer === false) && (
+        <details className="text-sm bg-amber-50 text-amber-800 rounded-md px-3 py-2">
+          <summary className="cursor-pointer font-medium">
+            Table <code>customer_features</code> / <code>customer_roles</code>{" "}
+            មិនទាន់មាន — ការកំណត់រក្សាទុកតែក្នុង browser នេះ (ចុចមើល SQL)
+          </summary>
+          <pre className="mt-2 text-xs whitespace-pre-wrap overflow-x-auto">
+            {CUSTOMER_FEATURES_SQL}
+          </pre>
+        </details>
+      )}
+
+      {canManage && newOpen && (
+        <form
+          onSubmit={createRole}
+          className="bg-white rounded-xl border border-mist-200 p-4 flex items-end gap-3 flex-wrap"
+        >
+          <label className="text-sm">
+            <span className="block text-ink-600/70 mb-1">Role name</span>
+            <input
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. VIP"
+              className="h-9 px-3 rounded-md border border-mist-200 text-sm"
+            />
+          </label>
+          <label className="text-sm">
+            <span className="block text-ink-600/70 mb-1">
+              Copy permissions from
+            </span>
+            <select
+              value={copyFrom}
+              onChange={(e) => setCopyFrom(e.target.value)}
+              className="h-9 px-3 rounded-md border border-mist-200 text-sm bg-white"
+            >
+              {view.roles.map((r) => (
+                <option key={r.name}>{r.name}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="submit"
+            className="h-9 px-3.5 rounded-md bg-signal-blue text-white text-sm font-medium"
+          >
+            Add
+          </button>
+          {newErr && <span className="text-sm text-signal-red">{newErr}</span>}
+          <p className="basis-full text-xs text-ink-600/55">
+            បន្ទាប់ពីបង្កើត សូមចុច <b>Save changes</b> ហើយកំណត់ Role ឱ្យភ្ញៀវនៅ
+            Customers › (ជ្រើសភ្ញៀវ) › Customer Details។
+          </p>
+        </form>
+      )}
+
+      <div className="bg-white rounded-xl border border-mist-200 overflow-auto max-h-[70vh]">
+        <table className="w-full text-sm border-separate border-spacing-0">
+          <thead>
+            <tr>
+              <th className={`${th} text-left min-w-[260px]`}>Feature</th>
+              <th className={`${th} min-w-[120px]`}>
+                Master
+                <div className="text-[11px] font-normal text-ink-600/55">
+                  All customers
+                </div>
+              </th>
+              {cols.map((r) => (
+                <th key={r.name} className={`${th} min-w-[110px]`}>
+                  <div className="flex items-center justify-center gap-1.5">
+                    {r.name}
+                    {canManage && !r.system && (
+                      <button
+                        type="button"
+                        title={`Delete role ${r.name}`}
+                        onClick={() => removeRole(r.name)}
+                        className="text-ink-600/40 hover:text-signal-red"
+                      >
+                        <Icons.X size={13} />
+                      </button>
+                    )}
+                  </div>
+                  {canManage ? (
+                    <div className="text-[11px] font-normal space-x-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setRoleAll(r.name, true)}
+                        className="text-signal-blue hover:underline"
+                      >
+                        all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setRoleAll(r.name, false)}
+                        className="text-ink-600/55 hover:underline"
+                      >
+                        none
+                      </button>
+                    </div>
+                  ) : (
+                    r.system && (
+                      <div className="text-[11px] font-normal text-ink-600/55">
+                        default
+                      </div>
+                    )
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <React.Fragment key={g}>
+                <tr>
+                  <td
+                    colSpan={2 + cols.length}
+                    className="bg-mist-50/70 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-ink-600/70 border-b border-mist-200"
+                  >
+                    {g}
+                  </td>
+                </tr>
+                {CUSTOMER_FEATURES.filter((f) => f.group === g).map((f) => {
+                  const masterOn = !!view.master[f.key];
+                  return (
+                    <tr key={f.key} className="hover:bg-mist-50/40">
+                      <td className="px-3 py-2.5 border-b border-mist-200">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <b className="text-ink-900">{f.label}</b>
+                          <span className="text-xs text-ink-600/55">
+                            {f.kh}
+                          </span>
+                        </div>
+                        <p className="text-xs text-ink-600/55 mt-0.5">
+                          {f.desc}
+                        </p>
+                      </td>
+                      <td className="px-3 py-2.5 text-center border-b border-mist-200">
+                        <input
+                          type="checkbox"
+                          className={cb}
+                          checked={f.locked ? true : masterOn}
+                          disabled={!canManage || f.locked}
+                          onChange={() => toggleMaster(f.key)}
+                          title={
+                            f.locked
+                              ? "Core feature — always on"
+                              : "Untick = OFF for every customer"
+                          }
+                        />
+                      </td>
+                      {cols.map((r) => (
+                        <td
+                          key={r.name}
+                          className={`px-3 py-2.5 text-center border-b border-mist-200 ${!masterOn && !f.locked ? "opacity-40" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className={cb}
+                            checked={
+                              f.locked ? true : !r.denied.includes(f.key)
+                            }
+                            disabled={!canManage || f.locked}
+                            onChange={() => toggleRole(r.name, f.key)}
+                            title={
+                              !masterOn && !f.locked
+                                ? "Master is OFF — hidden for everyone"
+                                : undefined
+                            }
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-ink-600/55">
+        Customer ដែលគ្មាន Role ឬ Role ត្រូវបានលុប នឹងប្រើ{" "}
+        <b>{DEFAULT_CUSTOMER_ROLE}</b>។ Feature ថ្មីដែលបន្ថែមនៅពេលក្រោយ
+        បើកជាលំនាំដើមសម្រាប់ Role ទាំងអស់។
+      </p>
+    </div>
+  );
+}
+
+// Role picker shown on the staff-side Customer Detail page.
+function CustomerRoleRow({ cust, canEdit, onSaved }) {
+  const roles = useCustomerRoles();
+  const [busy, setBusy] = useState(false);
+  const value = cust.customer_role || DEFAULT_CUSTOMER_ROLE;
+  useEffect(() => {
+    syncCustomerFeaturesFromServer();
+  }, []);
+  async function change(e) {
+    const next = e.target.value;
+    if (next === value || !supabase) return;
+    setBusy(true);
+    const { error } = await supabase
+      .from("customers")
+      .update({ customer_role: next })
+      .eq("id", cust.id);
+    setBusy(false);
+    if (error) {
+      emitCBToast(
+        "err",
+        "Cannot change Customer Role",
+        /customer_role/i.test(error.message || "")
+          ? "Run: alter table customers add column if not exists customer_role text default 'Standard';"
+          : error.message,
+      );
+      return;
+    }
+    onSaved(next);
+    emitCBToast(
+      "ok",
+      "Customer Role updated",
+      `${cust.customer_code} → ${next}`,
+    );
+  }
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
+      <span className="text-slate-500">Customer Role</span>
+      {canEdit ? (
+        <select
+          value={
+            roles.some((r) => r.name === value) ? value : DEFAULT_CUSTOMER_ROLE
+          }
+          onChange={change}
+          disabled={busy}
+          className="h-8 px-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold disabled:opacity-60"
+        >
+          {roles.map((r) => (
+            <option key={r.name}>{r.name}</option>
+          ))}
+        </select>
+      ) : (
+        <b>{value}</b>
+      )}
+    </div>
+  );
+}
 
 // ------------------------------------------------------------
 // pages/RoleManagement.jsx — Role list + Permission Matrix
@@ -26730,7 +28371,15 @@ function AirStatusBadge({ status }) {
     </span>
   );
 }
-function AirStatusTimeline({ status, history = [], refundReason = "" }) {
+function AirStatusTimeline({
+  status,
+  history = [],
+  refundReason = "",
+  // Optional: the customer portal passes these to render one language.
+  tr = (en) => en,
+  lab = (x) => x,
+  fmt = formatDbTimestamp,
+}) {
   const normalizedStatus = canonicalAirStatus(status);
   const refundEntry = [...history]
     .reverse()
@@ -26744,7 +28393,11 @@ function AirStatusTimeline({ status, history = [], refundReason = "" }) {
       ? AIR_ORDER_STATUS_FLOW.length
       : airStatusIndex(normalizedStatus);
   return (
-    <div className="space-y-1" role="list" aria-label="AIR shipment tracking">
+    <div
+      className="space-y-1"
+      role="list"
+      aria-label={tr("AIR shipment tracking", "ការតាមដានផ្លូវអាកាស")}
+    >
       {AIR_ORDER_STATUS_FLOW.map((label, i) => {
         const done = current > i;
         const active = current === i;
@@ -26775,16 +28428,16 @@ function AirStatusTimeline({ status, history = [], refundReason = "" }) {
               <p
                 className={`font-semibold text-[15px] leading-6 ${active ? "text-blue-700" : done ? "text-slate-900" : "text-slate-400"}`}
               >
-                {label}
+                {lab(label)}
               </p>
               <p className="text-xs text-slate-500 mt-0.5">
                 {h?.created_at
-                  ? formatDbTimestamp(h.created_at)
+                  ? fmt(h.created_at)
                   : done
-                    ? "Completed"
+                    ? tr("Completed", "បានបញ្ចប់")
                     : active
-                      ? "Current status"
-                      : "Pending"}
+                      ? tr("Current status", "ស្ថានភាពបច្ចុប្បន្ន")
+                      : tr("Pending", "កំពុងរង់ចាំ")}
               </p>
             </div>
           </div>
@@ -26796,16 +28449,18 @@ function AirStatusTimeline({ status, history = [], refundReason = "" }) {
             <Icons.RotateCcw size={14} />
           </div>
           <div className="min-w-0">
-            <p className="font-semibold text-sm text-red-700">Refund Order</p>
+            <p className="font-semibold text-sm text-red-700">
+              {lab("Refund Order")}
+            </p>
             <p className="text-xs text-slate-500 mt-0.5">
               {refundEntry?.created_at
-                ? formatDbTimestamp(refundEntry.created_at)
-                : "Refunded"}
+                ? fmt(refundEntry.created_at)
+                : tr("Refunded", "បានសងប្រាក់វិញ")}
             </p>
             {refundNote && (
               <div className="mt-2 rounded-xl bg-red-50 border border-red-100 px-3 py-2">
                 <p className="text-[10px] font-bold uppercase tracking-wide text-red-400">
-                  Refund Reason
+                  {tr("Refund Reason", "មូលហេតុសងប្រាក់")}
                 </p>
                 <p className="text-sm text-red-800 mt-0.5 whitespace-pre-wrap break-words">
                   {refundNote}
@@ -33563,6 +35218,16 @@ function CustomerDetailPage() {
               <CdRow label="Customer ID" value={cust.customer_code} />
               <CdRow label="Registered" value={cdDate(cust.created_at)} />
               <CdRow label="Status" value={isActive ? "Active" : cust.status} />
+              <CustomerRoleRow
+                cust={cust}
+                canEdit={hasPermission(user, "customer.edit")}
+                onSaved={(role) =>
+                  setState((st) => ({
+                    ...st,
+                    cust: { ...st.cust, customer_role: role },
+                  }))
+                }
+              />
             </CdCard>
             <CdCard title="Contact Information" icon="Phone">
               <CdRow label="Phone" value={cust.phone} />
@@ -36454,6 +38119,7 @@ function AdminApp() {
           <Route path="/warehouses" element={<WarehouseManagementPage />} />
           <Route path="/kh-warehouse" element={<KhWarehousePage />} />
           <Route path="/roles" element={<RoleManagementPage />} />
+          <Route path="/customer-features" element={<CustomerFeaturesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/reports" element={<ReportsHubPage />} />
           <Route path="/customers/:code" element={<CustomerDetailPage />} />
@@ -36475,6 +38141,7 @@ function AdminApp() {
                 "/kh-warehouse",
                 "/containers",
                 "/roles",
+                "/customer-features",
                 "/settings",
                 "/wallet-top-up",
                 "/delivery",
