@@ -26153,14 +26153,12 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
           .select("*")
           .single();
         if (error) throw error;
-        await supabase
-          .from("air_order_history")
-          .insert({
-            air_order_id: data.id,
-            status: "Order Processing",
-            created_by: by,
-            note: "AIR Order created",
-          });
+        await supabase.from("air_order_history").insert({
+          air_order_id: data.id,
+          status: "Order Processing",
+          created_by: by,
+          note: "AIR Order created",
+        });
         onSaved(data);
       } else {
         const local = { id: `air-local-${Date.now()}`, ...row };
@@ -26387,15 +26385,13 @@ function AirStatusUpdateModal({ open, row, onClose, onSaved }) {
           .select("*")
           .single();
         if (error) throw error;
-        await supabase
-          .from("air_order_history")
-          .insert({
-            air_order_id: row.id,
-            status: next,
-            tk: patch.tk,
-            created_by: by,
-            note: note.trim() || null,
-          });
+        await supabase.from("air_order_history").insert({
+          air_order_id: row.id,
+          status: next,
+          tk: patch.tk,
+          created_by: by,
+          note: note.trim() || null,
+        });
         onSaved(data);
       } else {
         const nextRow = { ...row, ...patch };
@@ -26490,7 +26486,11 @@ function AirStatusUpdateModal({ open, row, onClose, onSaved }) {
             disabled={busy}
             className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50"
           >
-            {busy ? "Updating…" : `Set ${next || "Status"}`}
+            {busy
+              ? "Updating…"
+              : next === "Complete Order"
+                ? "Complete Order"
+                : `Set ${next || "Status"}`}
           </button>
         </div>
       </form>
@@ -26532,14 +26532,12 @@ function AirRefundModal({ open, row, onClose, onSaved }) {
           .select("*")
           .single();
         if (error) throw error;
-        await supabase
-          .from("air_order_history")
-          .insert({
-            air_order_id: row.id,
-            status: AIR_ORDER_TERMINAL,
-            created_by: by,
-            note: reason.trim(),
-          });
+        await supabase.from("air_order_history").insert({
+          air_order_id: row.id,
+          status: AIR_ORDER_TERMINAL,
+          created_by: by,
+          note: reason.trim(),
+        });
         onSaved(data);
       } else {
         const nextRow = { ...row, ...patch, refund_reason: reason.trim() };
@@ -26689,9 +26687,6 @@ function AirShipmentsPage() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [updateRow, setUpdateRow] = useState(null);
-  const [refundRow, setRefundRow] = useState(null);
-  const [historyRow, setHistoryRow] = useState(null);
   const load = React.useCallback(async () => {
     if (!supabase) {
       setRows(airOrderLocalRows().map(normalizeAirRow));
@@ -26837,7 +26832,6 @@ function AirShipmentsPage() {
                   "Shop",
                   "Status",
                   "Updated",
-                  "Actions",
                 ].map((x) => (
                   <th key={x} className="px-4 py-3 font-semibold">
                     {x}
@@ -26849,11 +26843,11 @@ function AirShipmentsPage() {
               {loading ? (
                 Array.from({ length: 6 }).map((_, i) => (
                   <tr key={`air-sk-${i}`} aria-hidden="true">
-                    {Array.from({ length: 7 }).map((_, j) => (
+                    {Array.from({ length: 6 }).map((_, j) => (
                       <td key={j} className="px-4 py-3.5">
                         <Skeleton
                           className="h-3.5"
-                          style={{ width: j === 6 ? 90 : j === 0 ? 120 : 72 }}
+                          style={{ width: j === 0 ? 120 : 72 }}
                           delay={i * 70}
                         />
                       </td>
@@ -26863,7 +26857,7 @@ function AirShipmentsPage() {
               ) : !filtered.length ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={6}
                     className="px-4 py-10 text-center text-slate-400"
                   >
                     No AIR shipments found.
@@ -26895,46 +26889,6 @@ function AirShipmentsPage() {
                     <td className="px-4 py-3 text-slate-500">
                       {r.updated_at ? formatDbTimestamp(r.updated_at) : "—"}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        {canProcess && airStatusCanAdvance(r.status) && (
-                          <button
-                            type="button"
-                            onClick={() => setUpdateRow(r)}
-                            className="h-8 px-2.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 text-xs font-bold"
-                          >
-                            {airNextStatus(r.status)}
-                          </button>
-                        )}
-                        {canRefund &&
-                          canonicalAirStatus(r.status) ===
-                            "Order Processing" && (
-                            <button
-                              type="button"
-                              onClick={() => setRefundRow(r)}
-                              className="h-8 px-2.5 rounded-lg border border-red-200 bg-red-50 text-red-700 text-xs font-bold"
-                            >
-                              Refund
-                            </button>
-                          )}
-                        <button
-                          type="button"
-                          onClick={() => setHistoryRow(r)}
-                          className="h-8 px-2.5 rounded-lg border border-slate-200 bg-white text-slate-700 text-xs font-semibold"
-                        >
-                          History
-                        </button>
-                        {canDelete && (
-                          <button
-                            type="button"
-                            onClick={() => removeRow(r)}
-                            className="h-8 w-8 rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 grid place-items-center"
-                          >
-                            <Icons.Trash2 size={14} />
-                          </button>
-                        )}
-                      </div>
-                    </td>
                   </tr>
                 ))
               )}
@@ -26949,31 +26903,6 @@ function AirShipmentsPage() {
           onSaved={() => load()}
         />
       )}{" "}
-      {updateRow && (
-        <AirStatusUpdateModal
-          open
-          row={updateRow}
-          onClose={() => setUpdateRow(null)}
-          onSaved={() => {
-            setUpdateRow(null);
-            load();
-          }}
-        />
-      )}
-      {refundRow && (
-        <AirRefundModal
-          open
-          row={refundRow}
-          onClose={() => setRefundRow(null)}
-          onSaved={() => {
-            setRefundRow(null);
-            load();
-          }}
-        />
-      )}
-      {historyRow && (
-        <AirHistoryModal row={historyRow} onClose={() => setHistoryRow(null)} />
-      )}
     </div>
   );
 }
@@ -27026,13 +26955,16 @@ function AirAdminDetailSkeleton() {
 function AirShipmentDetailPage() {
   const { id } = useParams();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [row, setRow] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const canProcess = hasPermission(user, "air_order.process"),
-    canRefund = hasPermission(user, "air_order.refund");
+    canRefund = hasPermission(user, "air_order.refund"),
+    canDelete = hasPermission(user, "air_order.delete");
   const [updateOpen, setUpdateOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -27078,6 +27010,19 @@ function AirShipmentDetailPage() {
       alive = false;
     };
   }, [id]);
+  async function handleDelete() {
+    if (!canDelete || !row) return;
+    if (!window.confirm(`Delete AIR Order ${row.order_id}?`)) return;
+    if (supabase && !String(row.id).startsWith("air-local-")) {
+      const { error } = await supabase
+        .from("air_orders")
+        .delete()
+        .eq("id", row.id);
+      if (error) return window.alert(error.message);
+    }
+    airOrderLocalWrite(airOrderLocalRows().filter((x) => x.id !== row.id));
+    navigate("/air-shipments");
+  }
   if (loading) return <AirAdminDetailSkeleton />;
   if (!row)
     return (
@@ -27107,25 +27052,52 @@ function AirShipmentDetailPage() {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <AirStatusBadge status={row.status} />
           {canProcess && airStatusCanAdvance(row.status) && (
             <button
               onClick={() => setUpdateOpen(true)}
-              className="h-10 px-3 rounded-xl bg-blue-600 text-white text-sm font-bold"
+              className={`h-10 px-3 rounded-xl text-sm font-bold ${
+                canonicalAirStatus(row.status) ===
+                "Received at Cambodia Warehouse"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-blue-600 text-white"
+              }`}
             >
-              {airNextStatus(row.status)}
+              {canonicalAirStatus(row.status) ===
+              "Received at Cambodia Warehouse"
+                ? "Complete Order"
+                : airNextStatus(row.status)}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-semibold hover:bg-slate-50"
+          >
+            History
+          </button>
           {canRefund &&
             canonicalAirStatus(row.status) === "Order Processing" && (
               <button
+                type="button"
                 onClick={() => setRefundOpen(true)}
                 className="h-10 px-3 rounded-xl bg-red-600 text-white text-sm font-bold"
               >
                 Refund Order
               </button>
             )}
+          {canDelete && (
+            <button
+              type="button"
+              onClick={handleDelete}
+              title="Delete AIR Order"
+              aria-label="Delete AIR Order"
+              className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-slate-400 hover:text-red-600 hover:border-red-200 grid place-items-center"
+            >
+              <Icons.Trash2 size={16} />
+            </button>
+          )}
         </div>
       </div>
       <div className="grid lg:grid-cols-3 gap-5">
@@ -27165,6 +27137,9 @@ function AirShipmentDetailPage() {
             setUpdateOpen(false);
           }}
         />
+      )}
+      {historyOpen && (
+        <AirHistoryModal row={row} onClose={() => setHistoryOpen(false)} />
       )}
       {refundOpen && (
         <AirRefundModal
