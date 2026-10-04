@@ -781,7 +781,6 @@ const NAV_SECTIONS = [
       { label: "Exception Center", icon: "TriangleAlert", path: "/exceptions" },
       { label: "Inbound Origin", icon: "LogIn", path: "/inbound-origin" },
       { label: "Outbound Origin", icon: "LogOut", path: "/outbound-origin" },
-      { label: "Shipments", icon: "Truck", path: "/shipments" },
       { label: "Containers", icon: "Container", path: "/containers" },
       { label: "Shipment Lookup", icon: "Waypoints", path: "/shipment-lookup" },
     ],
@@ -789,7 +788,6 @@ const NAV_SECTIONS = [
   {
     label: "Cambodia",
     items: [
-      { label: "Arrival", icon: "Anchor", path: "/arrival" },
       {
         label: "W.H Arrived (Destination)",
         icon: "PackageCheck",
@@ -1685,8 +1683,9 @@ const MODULES = {
   "/arrival": {
     title: "Cambodia Arrival",
     subtitle: "Arrival at port / dry port",
+    primaryAction: "New Arrival",
     columns: [
-      col("shipment_no", "Shipment No", { strong: true }),
+      col("shipment_no", "Container No", { strong: true }),
       col("port", "Port / Dry Port"),
       col("arrivalDate", "Arrival Date"),
       col("status", "Status", { status: true }),
@@ -5766,229 +5765,19 @@ function CreatePackageModal({ open, onClose, onCreated }) {
 }
 
 // ------------------------------------------------------------
-// lib/useShipmentSearch.js + components/ShipmentPicker.jsx
-// ------------------------------------------------------------
-// Live search against the real `shipments` table, with an optional
-// inline "create new Shipment" — shared by Outbound Origin (assign
-// packages to a Shipment) and Arrival (select the Shipment that arrived).
-function useShipmentSearch(query) {
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const timerRef = useRef(null);
-  const requestId = useRef(0);
-
-  useEffect(() => {
-    clearTimeout(timerRef.current);
-    if (!supabase) {
-      setResults([]);
-      return;
-    }
-    setLoading(true);
-    const myRequestId = ++requestId.current;
-    timerRef.current = setTimeout(async () => {
-      try {
-        let req = supabase
-          .from("shipments")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(8);
-        const q = query.trim();
-        if (q) req = req.or(`shipment_no.ilike.%${q}%,route.ilike.%${q}%`);
-        const { data, error } = await req;
-        if (myRequestId !== requestId.current) return;
-        setResults(error || !data ? [] : data);
-      } catch {
-        if (myRequestId === requestId.current) setResults([]);
-      } finally {
-        if (myRequestId === requestId.current) setLoading(false);
-      }
-    }, 250);
-    return () => clearTimeout(timerRef.current);
-  }, [query]);
-
-  return { results, loading };
-}
-
-function generateShipmentNo() {
-  const y = new Date().getFullYear();
-  const rand = Math.floor(100000 + Math.random() * 900000);
-  return `SHP-${y}-${rand}`;
-}
-
-function ShipmentPicker({ value, onChange, allowCreate = true }) {
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const { results, loading } = useShipmentSearch(query);
-  const [creating, setCreating] = useState(false);
-  const [route, setRoute] = useState("China → Cambodia");
-  const [transport, setTransport] = useState("Sea");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const boxRef = useRef(null);
-
-  useEffect(() => {
-    function onClickOutside(e) {
-      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, []);
-
-  async function handleCreateShipment() {
-    setSaving(true);
-    setError("");
-    try {
-      if (supabase) {
-        const { data, error: err } = await supabase
-          .from("shipments")
-          .insert({
-            shipment_no: generateShipmentNo(),
-            route,
-            transport,
-            status: "In Transit",
-          })
-          .select("*")
-          .single();
-        if (err) throw err;
-        onChange(data);
-      } else {
-        onChange({
-          id: `local-${Date.now()}`,
-          shipment_no: generateShipmentNo(),
-          route,
-          transport,
-          status: "In Transit",
-        });
-      }
-      setCreating(false);
-    } catch (err) {
-      setError(err.message || "មិនអាចCreate Shipment បានទេ");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div ref={boxRef} className="relative space-y-2">
-      <label className="block text-xs font-semibold text-ink-600/55 uppercase tracking-wide">
-        Shipment <span className="text-signal-red">*</span>
-      </label>
-      {value ? (
-        <div className="flex items-center justify-between border border-mist-200 rounded-md px-3 py-2 text-sm bg-mist-50">
-          <span className="font-medium text-ink-900">
-            {value.shipment_no || String(value.id).slice(0, 8)}
-          </span>
-          <button
-            type="button"
-            onClick={() => onChange(null)}
-            className="text-ink-600/50 hover:text-signal-red"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      ) : creating ? (
-        <div className="border border-mist-200 rounded-md p-3 space-y-2">
-          {error && <p className="text-xs text-signal-red">{error}</p>}
-          <input
-            value={route}
-            onChange={(e) => setRoute(e.target.value)}
-            className="w-full bg-white border border-mist-200 rounded-md px-3 py-2 text-sm outline-none focus:border-signal-blue"
-          />
-          <input
-            value={transport}
-            onChange={(e) => setTransport(e.target.value)}
-            className="w-full bg-white border border-mist-200 rounded-md px-3 py-2 text-sm outline-none focus:border-signal-blue"
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={saving}
-              onClick={handleCreateShipment}
-              className="text-sm font-medium bg-signal-blue text-white px-3 py-1.5 rounded-md disabled:opacity-60"
-            >
-              {saving ? "កំពុងបង្កើត..." : "Create Shipment"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setCreating(false)}
-              className="text-sm text-ink-700 px-3 py-1.5 rounded-md hover:bg-mist-50"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setOpen(true);
-            }}
-            onFocus={() => setOpen(true)}
-            className="w-full bg-white border border-mist-200 rounded-md px-3 py-2 text-sm outline-none focus:border-signal-blue"
-          />
-          {open && (
-            <div className="absolute z-20 mt-1 w-full bg-white border border-mist-200 rounded-md shadow-lg max-h-48 overflow-y-auto">
-              {loading ? (
-                <SkeletonDropdownRows />
-              ) : results.length > 0 ? (
-                results.map((s) => (
-                  <button
-                    type="button"
-                    key={s.id}
-                    onClick={() => {
-                      onChange(s);
-                      setQuery("");
-                      setOpen(false);
-                    }}
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-mist-50"
-                  >
-                    <span className="font-medium text-ink-900">
-                      {s.shipment_no || String(s.id).slice(0, 8)}
-                    </span>
-                    <span className="text-ink-600/55">
-                      {" "}
-                      · {s.route} · {s.status}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <p className="px-3 py-2 text-xs text-ink-600/45">
-                  No shipment found
-                </p>
-              )}
-              {allowCreate && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    setCreating(true);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-signal-blue border-t border-mist-200 hover:bg-mist-50"
-                >
-                  + Create Shipment ថ្មី
-                </button>
-              )}
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------
 // components/CreateArrivalModal.jsx
 // ------------------------------------------------------------
-// Selects a Shipment, creates its Arrival record, then propagates the
-// arrival: the Shipment's own status updates, and every Package riding
-// on it moves to "Arrived Destination" (see PACKAGE_STAGES) — making
-// them ready for Cambodia Warehouse. Direct Shipment -> Arrival, no
-// Container hop (Container is Phase 2, per the workflow spec).
+// Container-only flow (the Shipments module was removed): pick a Container
+// that has left China, record the port / arrival date, and confirm its
+// arrival. The status change goes through the Container module's own
+// confirmArrival (permission + destination checks + history), so this page
+// and Containers can never disagree. TKs are NOT touched here — each TK
+// becomes Arrived when the warehouse scans it in W.H Arrived › Scan Arrive V2.
+// The container number is stored in the existing arrival.shipment_no column
+// (no migration needed); arrival.shipment_id is no longer written.
 function CreateArrivalModal({ open, onClose, onCreated }) {
-  const { refetch: refetchPackages } = usePackageTracking();
-  const [shipment, setShipment] = useState(null);
+  const store = useContainerStore();
+  const [containerId, setContainerId] = useState("");
   const [port, setPort] = useState("");
   const [arrivalDate, setArrivalDate] = useState("");
   const [saving, setSaving] = useState(false);
@@ -5996,19 +5785,28 @@ function CreateArrivalModal({ open, onClose, onCreated }) {
 
   useEffect(() => {
     if (open) {
-      setShipment(null);
+      setContainerId("");
       setPort("");
       setArrivalDate("");
       setError("");
     }
   }, [open]);
 
+  // Only containers that already left China and are not yet confirmed.
+  const candidates = (store.containers || []).filter(
+    (c) =>
+      c.status !== "Cancelled" &&
+      c.status !== "Arrived Destination" &&
+      containerStage(c.status) >= 2,
+  );
+
   if (!open) return null;
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
-    if (!shipment) return setError("សូមជ្រើសរើស Shipment");
+    const container = candidates.find((c) => String(c.id) === containerId);
+    if (!container) return setError("សូមជ្រើសរើស Container");
     if (!port.trim()) return setError("សូមបញ្ចូល Port / Dry Port");
     if (!supabase) {
       setError("Supabase មិនទាន់ត្រូវបានភ្ជាប់ទេ");
@@ -6016,32 +5814,21 @@ function CreateArrivalModal({ open, onClose, onCreated }) {
     }
     setSaving(true);
     try {
+      await store.confirmArrival(container);
       const { data, error: err } = await supabase
         .from("arrival")
         .insert({
-          shipment_id: shipment.id,
-          shipment_no: shipment.shipment_no,
+          shipment_no: container.container_number,
           port: port.trim(),
           arrivalDate: arrivalDate.trim() || formatNowTimestamp(),
           status: "Pending",
         })
         .select("*")
         .single();
-      if (err) throw err;
-
-      // Propagate: the shipment has arrived, so every package riding on
-      // it advances to "Arrived Destination" and becomes visible for
-      // Cambodia Warehouse.
-      await supabase
-        .from("shipments")
-        .update({ status: "Arrived" })
-        .eq("id", shipment.id);
-      await supabase
-        .from("packages")
-        .update({ status: "Arrived Destination" })
-        .eq("shipment_id", shipment.id);
-      await refetchPackages();
-
+      if (err)
+        throw new Error(
+          `Container ${container.container_number} បាន Arrived Destination ហើយ ប៉ុន្តែ Save Arrival record មិនបាន: ${err.message}`,
+        );
       onCreated?.(data);
       onClose();
     } catch (err) {
@@ -6073,11 +5860,29 @@ function CreateArrivalModal({ open, onClose, onCreated }) {
               {error}
             </div>
           )}
-          <ShipmentPicker
-            value={shipment}
-            onChange={setShipment}
-            allowCreate={false}
-          />
+          <div>
+            <label className="block text-xs font-semibold text-ink-600/55 uppercase tracking-wide mb-1">
+              Container <span className="text-signal-red">*</span>
+            </label>
+            <select
+              value={containerId}
+              onChange={(e) => setContainerId(e.target.value)}
+              className="w-full bg-white border border-mist-200 rounded-md px-3 py-2 text-sm outline-none focus:border-signal-blue"
+            >
+              <option value="">— ជ្រើសរើស Container —</option>
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.container_number} · {c.shipping_method || "—"} · {c.status}
+                </option>
+              ))}
+            </select>
+            {candidates.length === 0 && (
+              <p className="mt-1.5 text-xs text-ink-600/55">
+                មិនមាន Container ដែលចេញពីឃ្លាំងចិនទេ — សូម Depart China នៅ
+                Containers សិន
+              </p>
+            )}
+          </div>
           <div>
             <label className="block text-xs font-semibold text-ink-600/55 uppercase tracking-wide mb-1">
               Port / Dry Port <span className="text-signal-red">*</span>
@@ -17011,7 +16816,77 @@ const CT_BTN_GHOST =
   "inline-flex items-center gap-1.5 border border-mist-200 bg-white text-ink-700 text-sm font-medium px-3.5 py-2 rounded-md hover:bg-mist-50 disabled:opacity-60";
 const CT_BTN_DANGER =
   "inline-flex items-center gap-1.5 border border-signal-red/30 text-signal-red text-sm font-medium px-3.5 py-2 rounded-md hover:bg-signal-red/10 disabled:opacity-60";
+// Status-action colours: Hold = amber (waiting), Failed = red (rejected),
+// Completed = teal (cleared), Arrived Destination = blue (final confirm).
+const CT_BTN_HOLD =
+  "inline-flex items-center gap-1.5 border border-signal-amber/40 bg-signal-amber/10 text-[#8A5A12] text-sm font-medium px-3.5 py-2 rounded-md hover:bg-signal-amber/20 disabled:opacity-60";
+const CT_BTN_FAIL =
+  "inline-flex items-center gap-1.5 border border-signal-red/30 bg-signal-red/5 text-signal-red text-sm font-medium px-3.5 py-2 rounded-md hover:bg-signal-red/10 disabled:opacity-60";
+const CT_BTN_OK =
+  "inline-flex items-center gap-1.5 bg-signal-teal text-white text-sm font-medium px-3.5 py-2 rounded-md hover:bg-signal-teal/90 disabled:opacity-60";
 const CT_CARD = "bg-white border border-mist-200 rounded-md shadow-panel";
+
+// One colour per container status so the list can be read at a glance:
+// gray Empty · blue Loading · purple Departure · indigo CN · pink VN ·
+// amber Hold · red Failed · green Arrived.
+const CONTAINER_STATUS_STYLE = {
+  Empty: {
+    pill: "text-[#5B6475] bg-[#F1F3F6] border-[#E1E5EB]",
+    dot: "bg-[#9AA3B2]",
+  },
+  Loading: {
+    pill: "text-[#1D4ED8] bg-[#EFF6FF] border-[#BFDBFE]",
+    dot: "bg-[#3B82F6]",
+  },
+  "Departure China Warehouse": {
+    pill: "text-[#7E22CE] bg-[#FAF5FF] border-[#E9D5FF]",
+    dot: "bg-[#A855F7]",
+  },
+  "CN: Customs Clearance Hold": {
+    pill: "text-[#92400E] bg-[#FFFBEB] border-[#FDE68A]",
+    dot: "bg-[#F59E0B]",
+  },
+  "CN: Customs Clearance Failed": {
+    pill: "text-[#B91C1C] bg-[#FEF2F2] border-[#FECACA]",
+    dot: "bg-[#EF4444]",
+  },
+  "CN: Customs Clearance Completed": {
+    pill: "text-[#4338CA] bg-[#EEF2FF] border-[#C7D2FE]",
+    dot: "bg-[#6366F1]",
+  },
+  "VN: Customs Clearance Hold": {
+    pill: "text-[#92400E] bg-[#FFFBEB] border-[#FDE68A]",
+    dot: "bg-[#F59E0B]",
+  },
+  "VN: Customs Clearance Failed": {
+    pill: "text-[#B91C1C] bg-[#FEF2F2] border-[#FECACA]",
+    dot: "bg-[#EF4444]",
+  },
+  "VN: Customs Clearance Completed": {
+    pill: "text-[#BE185D] bg-[#FDF2F8] border-[#FBCFE8]",
+    dot: "bg-[#EC4899]",
+  },
+  "Arrived Destination": {
+    pill: "text-[#047857] bg-[#ECFDF5] border-[#A7F3D0]",
+    dot: "bg-[#10B981]",
+  },
+  Cancelled: {
+    pill: "text-[#64748B] bg-[#F8FAFC] border-[#E2E8F0] line-through",
+    dot: "bg-[#CBD5E1]",
+  },
+};
+const CONTAINER_STATUS_FALLBACK = CONTAINER_STATUS_STYLE.Empty;
+
+function ContainerStatusBadge({ label }) {
+  const st = CONTAINER_STATUS_STYLE[label] || CONTAINER_STATUS_FALLBACK;
+  return (
+    <span
+      className={`inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-md border whitespace-nowrap ${st.pill}`}
+    >
+      {label || "—"}
+    </span>
+  );
+}
 
 function containerCanMove(from, to) {
   if (to === "Cancelled") return ["Empty", "Loading"].includes(from);
@@ -17023,6 +16898,36 @@ function containerCanMove(from, to) {
   const b = containerStage(to);
   if (b === a && /Completed$/.test(from)) return false;
   return b > a || (b === a && to !== from);
+}
+
+// "Update Container Status" shows ONE stage at a time instead of every
+// remaining status:
+//   Departure → CN (Hold / Failed / Completed)
+//   CN Completed → VN (Hold / Failed / Completed)
+//   VN Completed → Arrived Destination
+// While a stage is Hold or Failed, only that stage's other outcomes show.
+function containerNextActions(status) {
+  const cn = CONTAINER_CUSTOMS_ACTIONS.filter((x) => x.startsWith("CN:"));
+  const vn = CONTAINER_CUSTOMS_ACTIONS.filter((x) => x.startsWith("VN:"));
+  const v = String(status || "");
+  let list = [];
+  if (v === "Departure China Warehouse") list = cn;
+  else if (v === "CN: Customs Clearance Completed") list = vn;
+  else if (v.startsWith("CN:")) list = cn.filter((x) => x !== v);
+  else if (v.startsWith("VN:") && v !== "VN: Customs Clearance Completed")
+    list = vn.filter((x) => x !== v);
+  else if (v === "VN: Customs Clearance Completed")
+    list = ["Arrived Destination"];
+  return list.filter((x) => containerCanMove(v, x));
+}
+
+function containerNextStepLabel(status) {
+  const v = String(status || "");
+  if (v === "VN: Customs Clearance Completed")
+    return "ជំហានបន្ទាប់: បញ្ជាក់ការមកដល់ឃ្លាំងខ្មែរ";
+  if (v === "CN: Customs Clearance Completed" || v.startsWith("VN:"))
+    return "ជំហានបន្ទាប់: VN Customs Clearance (ព្រំដែនវៀតណាម–ខ្មែរ)";
+  return "ជំហានបន្ទាប់: CN Customs Clearance";
 }
 
 function fmtDate(d) {
@@ -20043,7 +19948,7 @@ function CustomerContainersView() {
                 {c.eta ? ` · ETA ${fmtDate(c.eta)}` : ""}
               </div>
             </div>
-            <StatusBadge label={c.status} />
+            <ContainerStatusBadge label={c.status} />
           </div>
           <div className="flex flex-wrap gap-x-5 gap-y-3">
             {customerSteps(c).map((st) => (
@@ -20141,6 +20046,8 @@ function ContainersPageInner() {
     to: "",
   });
   const [modal, setModal] = useState(null); // { existing } | null
+  // Processing = on its way · Arrived = Arrived Destination · Cancelled
+  const [tab, setTab] = useState("processing");
   const setFilter = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   const whLabel = (code) =>
     store.whRows.find((w) => w.code === code)?.name || code || "—";
@@ -20154,7 +20061,29 @@ function ContainersPageInner() {
     [store.containers, store.activeItems, packages],
   );
 
-  const rows = all.filter(({ c, tks }) => {
+  const tabOf = (c) =>
+    c.status === "Arrived Destination"
+      ? "arrived"
+      : c.status === "Cancelled"
+        ? "cancelled"
+        : "processing";
+  const tabCounts = { processing: 0, arrived: 0, cancelled: 0 };
+  all.forEach((x) => {
+    tabCounts[tabOf(x.c)] += 1;
+  });
+  const tabAll = all.filter((x) => tabOf(x.c) === tab);
+  const tabStatuses =
+    tab === "arrived"
+      ? ["Arrived Destination"]
+      : tab === "cancelled"
+        ? ["Cancelled"]
+        : CONTAINER_STATUS_LIST.filter((x) => x !== "Arrived Destination");
+  const switchTab = (t) => {
+    setTab(t);
+    setF((x) => ({ ...x, status: "" }));
+  };
+
+  const rows = tabAll.filter(({ c, tks }) => {
     if (f.status && c.status !== f.status) return false;
     if (f.type && c.container_type !== f.type) return false;
     if (f.origin && c.origin_wh_code !== f.origin) return false;
@@ -20181,9 +20110,9 @@ function ContainersPageInner() {
     );
   });
 
-  const count = (s) => all.filter((x) => x.c.status === s).length;
+  const count = (s) => tabAll.filter((x) => x.c.status === s).length;
   const allTks = new Map();
-  all.forEach((x) => x.tks.forEach((p) => allTks.set(tkKey(p.tk), p)));
+  tabAll.forEach((x) => x.tks.forEach((p) => allTks.set(tkKey(p.tk), p)));
   const totals = summarizeTks([...allTks.values()]);
 
   const tableRows = rows.map(({ c, s, tks }) => ({
@@ -20196,6 +20125,7 @@ function ContainersPageInner() {
     cbm: `${s.cbm.toFixed(2)} CBM`,
     dep: fmtDate(c.departed_at || c.departure_date),
     eta: fmtDate(c.eta),
+    arrivedAt: fmtDate(c.arrived_at),
     status: c.status,
     c,
     tks,
@@ -20241,15 +20171,21 @@ function ContainersPageInner() {
     { key: "tk", label: "TK Count" },
     { key: "cbm", label: "CBM" },
     { key: "dep", label: "Departure" },
-    { key: "eta", label: "ETA" },
-    { key: "status", label: "Status", status: true },
+    tab === "arrived"
+      ? { key: "arrivedAt", label: "Arrived At" }
+      : { key: "eta", label: "ETA" },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => <ContainerStatusBadge label={r.status} />,
+    },
     { key: "actions", label: "Actions", render: actions },
   ];
 
   const stats = [
     ["Total CBM", totals.cbm.toFixed(2), "Box", "ink"],
     ["Total Weight (kg)", totals.weight.toFixed(1), "Weight", "ink"],
-    ["Total Containers", all.length, "Container", "ink"],
+    ["Total Containers", tabAll.length, "Container", "ink"],
     ["Total TK in Containers", totals.tk, "Package", "ink"],
     ["Total Customers", totals.customers, "Users", "ink"],
   ];
@@ -20284,6 +20220,30 @@ function ContainersPageInner() {
         </div>
       )}
 
+      <div className="flex items-center gap-6 border-b border-mist-200">
+        {[
+          ["processing", "Processing"],
+          ["arrived", "Arrived"],
+          ...(tabCounts.cancelled > 0 ? [["cancelled", "Cancelled"]] : []),
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => switchTab(key)}
+            className={`flex items-center gap-2 pb-2.5 -mb-px text-sm font-medium border-b-2 ${
+              tab === key
+                ? "border-signal-blue text-signal-blue"
+                : "border-transparent text-ink-600/55 hover:text-ink-900"
+            }`}
+          >
+            {label}
+            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded-full bg-ink-900/5 text-ink-700">
+              {tabCounts[key]}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {listReady ? (
         <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-3 cb-fade-in">
           {stats.map(([label, value, icon, tone]) => (
@@ -20303,13 +20263,13 @@ function ContainersPageInner() {
         />
       )}
 
-      {listReady && (
+      {listReady && tab === "processing" && (
         <div className={`${CT_CARD} p-4`}>
           <h2 className="font-display font-bold text-sm text-ink-900 mb-3">
             Container Status
           </h2>
           <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-            {CONTAINER_STATUS_LIST.map((label) => (
+            {tabStatuses.map((label) => (
               <button
                 key={label}
                 type="button"
@@ -20320,7 +20280,10 @@ function ContainersPageInner() {
                 }
                 className={`text-left border rounded-md px-3 py-2.5 hover:bg-mist-50 ${f.status === label ? "border-signal-blue bg-signal-blue/5" : "border-mist-200"}`}
               >
-                <div className="text-xs text-ink-600/60 leading-snug min-h-[2rem]">
+                <div className="flex items-start gap-1.5 text-xs text-ink-600/60 leading-snug min-h-[2rem]">
+                  <span
+                    className={`mt-1 w-2 h-2 rounded-full shrink-0 ${(CONTAINER_STATUS_STYLE[label] || CONTAINER_STATUS_FALLBACK).dot}`}
+                  />
                   {label}
                 </div>
                 <div className="font-display font-extrabold text-xl text-ink-900 mt-1">
@@ -20351,7 +20314,7 @@ function ContainersPageInner() {
             className={INPUT_CLS}
           >
             <option value="">All Status</option>
-            {[...CONTAINER_STATUS_LIST, "Cancelled"].map((s) => (
+            {tabStatuses.map((s) => (
               <option key={s}>{s}</option>
             ))}
           </select>
@@ -20461,7 +20424,7 @@ function ContainersPageInner() {
                 >
                   {r.no}
                 </Link>
-                <StatusBadge label={r.status} />
+                <ContainerStatusBadge label={r.status} />
               </div>
               <p className="text-sm text-ink-600/70">
                 {r.origin} → {r.dest}
@@ -20694,7 +20657,7 @@ function ContainerDetailInner() {
         </div>
         <div className="flex items-center gap-2">
           <ManifestMenu container={container} tks={tks} whRows={store.whRows} />
-          <StatusBadge label={st} />
+          <ContainerStatusBadge label={st} />
         </div>
       </div>
 
@@ -20818,52 +20781,57 @@ function ContainerDetailInner() {
             <h2 className="font-display font-bold text-sm text-ink-900">
               Update Container Status
             </h2>
+            <p className="text-xs text-ink-600/60">
+              {containerNextStepLabel(st)}
+            </p>
             <div className="flex flex-wrap gap-2">
-              {CONTAINER_CUSTOMS_ACTIONS.filter((x) =>
-                containerCanMove(st, x),
-              ).map((x) => (
-                <button
-                  key={x}
-                  type="button"
-                  className={
-                    /Failed/.test(x)
-                      ? CT_BTN_DANGER
-                      : /Hold/.test(x)
-                        ? CT_BTN_GHOST
-                        : CT_BTN_PRIMARY
-                  }
-                  onClick={() =>
-                    ask({
-                      title: x,
-                      message: `កំណត់ Container ${container.container_number} ជា "${x}"?`,
-                      confirmLabel: "Update Status",
-                      danger: /Failed/.test(x),
-                      askReason: !/Completed/.test(x),
-                      onConfirm: run(x, `Container: ${x}`),
-                    })
-                  }
-                >
-                  {x}
-                </button>
-              ))}
-              {canKh && (
-                <button
-                  type="button"
-                  className={CT_BTN_PRIMARY}
-                  onClick={() =>
-                    ask({
-                      title: "Confirm Arrival",
-                      message: `Confirmថា Container ${container.container_number} បានមកដល់ឃ្លាំងទទួលទំនិញ? វាមិនប៉ះពាល់ TK ទេ — TK នៅ Outbound រហូតដល់ឃ្លាំង Scan Arrive V2។`,
-                      confirmLabel: "Confirm Arrival",
-                      onConfirm: async () => {
-                        await store.confirmArrival(container);
-                        showFlash("Container Arrived Destination");
-                      },
-                    })
-                  }
-                >
-                  Arrived Destination
-                </button>
+              {containerNextActions(st).map((x) =>
+                x === "Arrived Destination" ? (
+                  canKh && (
+                    <button
+                      key={x}
+                      type="button"
+                      className={CT_BTN_PRIMARY}
+                      onClick={() =>
+                        ask({
+                          title: "Confirm Arrival",
+                          message: `Confirmថា Container ${container.container_number} បានមកដល់ឃ្លាំងទទួលទំនិញ? វាមិនប៉ះពាល់ TK ទេ — TK នៅ Outbound រហូតដល់ឃ្លាំង Scan Arrive V2។`,
+                          confirmLabel: "Confirm Arrival",
+                          onConfirm: async () => {
+                            await store.confirmArrival(container);
+                            showFlash("Container Arrived Destination");
+                          },
+                        })
+                      }
+                    >
+                      Arrived Destination
+                    </button>
+                  )
+                ) : (
+                  <button
+                    key={x}
+                    type="button"
+                    className={
+                      /Failed/.test(x)
+                        ? CT_BTN_FAIL
+                        : /Hold/.test(x)
+                          ? CT_BTN_HOLD
+                          : CT_BTN_OK
+                    }
+                    onClick={() =>
+                      ask({
+                        title: x,
+                        message: `កំណត់ Container ${container.container_number} ជា "${x}"?`,
+                        confirmLabel: "Update Status",
+                        danger: /Failed/.test(x),
+                        askReason: !/Completed/.test(x),
+                        onConfirm: run(x, `Container: ${x}`),
+                      })
+                    }
+                  >
+                    {x}
+                  </button>
+                ),
               )}
             </div>
           </div>
@@ -26593,7 +26561,7 @@ const SLA_STAGE_KEYS = {
   Completed: "completedAt",
 };
 
-function slaBuildInput(pkg, history, modeByShipment) {
+function slaBuildInput(pkg, history, modeByContainer) {
   const first = {};
   let last = null;
   for (const h of history || []) {
@@ -26603,7 +26571,11 @@ function slaBuildInput(pkg, history, modeByShipment) {
     if (h.at && (!last || new Date(h.at) > new Date(last))) last = h.at;
   }
   const mode =
-    modeByShipment[String(pkg.shipment_id)] ||
+    modeByContainer[
+      String(pkg.container_no || "")
+        .trim()
+        .toUpperCase()
+    ] ||
     pkg.method ||
     pkg.transport ||
     "";
@@ -26631,7 +26603,7 @@ function slaBuildInput(pkg, history, modeByShipment) {
 }
 
 // One shared, 60-second cache so Dashboard + notification sync + detail cards
-// don't each re-query the shipments table.
+// don't each re-query the containers table.
 let SLA_MODES_CACHE = { at: 0, promise: null };
 function slaLoadModes() {
   if (!supabase) return Promise.resolve(null);
@@ -26640,13 +26612,20 @@ function slaLoadModes() {
   SLA_MODES_CACHE = {
     at: Date.now(),
     promise: supabase
-      .from("shipments")
-      .select("id,transport")
+      .from("containers")
+      .select("container_number,shipping_method")
       .limit(2000)
       .then(({ data, error }) =>
         error || !data
           ? null
-          : Object.fromEntries(data.map((x) => [String(x.id), x.transport])),
+          : Object.fromEntries(
+              data.map((x) => [
+                String(x.container_number || "")
+                  .trim()
+                  .toUpperCase(),
+                x.shipping_method,
+              ]),
+            ),
       ),
   };
   return SLA_MODES_CACHE.promise;
@@ -26982,25 +26961,29 @@ function SlaPackageCard({ pkg, tk }) {
   const [mode, setMode] = useState("");
 
   useEffect(() => {
-    if (!supabase || !pkg?.shipment_id) return;
+    if (!supabase || !pkg?.container_no) return;
     let alive = true;
     supabase
-      .from("shipments")
-      .select("transport")
-      .eq("id", pkg.shipment_id)
+      .from("containers")
+      .select("shipping_method")
+      .eq("container_number", pkg.container_no)
       .maybeSingle()
-      .then(({ data }) => alive && data && setMode(data.transport || ""));
+      .then(({ data }) => alive && data && setMode(data.shipping_method || ""));
     return () => {
       alive = false;
     };
-  }, [pkg?.shipment_id]);
+  }, [pkg?.container_no]);
 
   const view = useMemo(() => {
     if (!pkg || loading) return null;
     const input = slaBuildInput(
       { ...pkg, tk: pkg.tk || tk },
       getHistory(pkg.tk || tk),
-      { [String(pkg.shipment_id)]: mode },
+      {
+        [String(pkg.container_no || "")
+          .trim()
+          .toUpperCase()]: mode,
+      },
     );
     return {
       input,
@@ -29404,7 +29387,12 @@ function ContainerReportBody({ tab, f }) {
         id: c.id,
         no: c.container_number || "",
         seal: c.seal_number || "",
-        mode: c.transport || c.transport_mode || c.method || "",
+        mode:
+          c.shipping_method ||
+          c.transport ||
+          c.transport_mode ||
+          c.method ||
+          "",
         origin: c.origin_wh_code || "",
         dest: c.dest_wh_code || c.destination || "",
         departure: c.departed_at || c.departure_date || null,
@@ -32126,6 +32114,1864 @@ function WalletTopUpPage() {
   );
 }
 
+// ------------------------------------------------------------
+// pages/DeliveryPage.jsx
+// ------------------------------------------------------------
+// Delivery Dashboard + "Request Delivery" drawer. Staff type a Customer
+// ID (or phone); the drawer loads that customer's addresses and every TK
+// sitting in Inbound Warehouse, staff tick the TKs + address, set the
+// delivery fee / payment type, and submit. TKs already inside an active
+// delivery (Pending / In Delivery) are locked so they can't be requested
+// twice. Needs supabase/delivery.sql; falls back to localStorage without
+// Supabase (UI-only mode).
+const DELIVERY_LS_KEY = "cb_deliveries_v1";
+const DELIVERY_STATUSES = ["Pending", "In Delivery", "Delivered", "Cancelled"];
+const DELIVERY_ACTIVE = ["Pending", "In Delivery"];
+const DELIVERY_PAYMENT_TYPES = [
+  { value: "wallet", label: "Wallet" },
+  { value: "cod", label: "COD (Cash on Delivery)" },
+];
+const DELIVERY_TONE = {
+  Pending: "bg-signal-amber/15 text-[#8A5A12]",
+  "In Delivery": "bg-signal-blue/10 text-signal-blue",
+  Delivered: "bg-signal-teal/10 text-signal-teal",
+  Cancelled: "bg-signal-red/10 text-signal-red",
+};
+
+function DeliveryStatusBadge({ status }) {
+  return (
+    <span
+      className={`inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-sm whitespace-nowrap ${DELIVERY_TONE[status] || "bg-mist-100 text-ink-700"}`}
+    >
+      {status}
+    </span>
+  );
+}
+
+function deliveryAddressText(a) {
+  return [a?.address || a?.addr, a?.commune, a?.district, a?.province]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function useDeliveries() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const reload = React.useCallback(async () => {
+    setError("");
+    if (!supabase) {
+      setRows(lsRead(DELIVERY_LS_KEY, []));
+      setLoading(false);
+      return;
+    }
+    const { data, error: err } = await supabase
+      .from("deliveries")
+      .select("*, delivery_items(id, tk, fee_due)")
+      .order("requested_at", { ascending: false })
+      .limit(500);
+    if (err) {
+      setError(
+        /relation|does not exist|schema cache/i.test(err.message || "")
+          ? "តារាង deliveries មិនទាន់មាន — សូមរត់ supabase/delivery.sql សិន"
+          : err.message,
+      );
+      setRows([]);
+    } else {
+      setRows(
+        (data || []).map((d) => ({ ...d, items: d.delivery_items || [] })),
+      );
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  const create = async (d, items) => {
+    const deliveryNo = `DL${new Date().toISOString().slice(2, 10).replace(/-/g, "")}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const row = {
+      ...d,
+      delivery_no: deliveryNo,
+      status: "Pending",
+      requested_at: new Date().toISOString(),
+    };
+    if (!supabase) {
+      const local = {
+        ...row,
+        id: makeId(),
+        items: items.map((i) => ({ id: makeId(), ...i })),
+      };
+      const next = [local, ...lsRead(DELIVERY_LS_KEY, [])];
+      lsWrite(DELIVERY_LS_KEY, next);
+      setRows(next);
+      return local;
+    }
+    const { data, error: err } = await supabase
+      .from("deliveries")
+      .insert(row)
+      .select()
+      .single();
+    if (err) throw new Error(err.message);
+    const { error: itemErr } = await supabase
+      .from("delivery_items")
+      .insert(items.map((i) => ({ ...i, delivery_id: data.id })));
+    if (itemErr) {
+      await supabase.from("deliveries").delete().eq("id", data.id);
+      throw new Error(itemErr.message);
+    }
+    await reload();
+    return data;
+  };
+
+  const patch = async (id, values) => {
+    if (!supabase) {
+      const next = lsRead(DELIVERY_LS_KEY, []).map((r) =>
+        r.id === id ? { ...r, ...values } : r,
+      );
+      lsWrite(DELIVERY_LS_KEY, next);
+      setRows(next);
+      return;
+    }
+    const { error: err } = await supabase
+      .from("deliveries")
+      .update(values)
+      .eq("id", id);
+    if (err) throw new Error(err.message);
+    await reload();
+  };
+
+  return { rows, loading, error, reload, create, patch };
+}
+
+// Customer ID / phone → { customer, addresses }.
+async function findCustomerForDelivery(raw) {
+  const q = String(raw || "").trim();
+  if (!q) return null;
+  if (!supabase) {
+    const rows = (MODULES["/customers"]?.rows || []).filter(Boolean);
+    const digits = q.replace(/[^\d]/g, "");
+    const c = rows.find(
+      (r) =>
+        String(r.id).toLowerCase() === q.toLowerCase() ||
+        (digits &&
+          String(r.phone || "")
+            .replace(/[^\d]/g, "")
+            .includes(digits)),
+    );
+    return c
+      ? {
+          customer: {
+            uuid: null,
+            customer_code: c.id,
+            name: c.name,
+            phone: c.phone,
+          },
+          addresses: [],
+        }
+      : null;
+  }
+  const digits = q.replace(/[^\d]/g, "");
+  const isCode = /[a-z]/i.test(q) || q.includes("-");
+  let req = supabase.from("customers").select("id, customer_code, name, phone");
+  if (isCode) req = req.ilike("customer_code", q);
+  else if (digits.length >= 6) req = req.ilike("phone", `%${digits}%`);
+  else req = req.ilike("customer_code", `%${digits}`);
+  const { data, error } = await req.limit(1).maybeSingle();
+  if (error || !data) return null;
+  const { data: addrs } = await supabase
+    .from("customer_addresses")
+    .select("*")
+    .eq("customer_id", data.id)
+    .order("is_default", { ascending: false })
+    .order("created_at", { ascending: true });
+  return {
+    customer: {
+      uuid: data.id,
+      customer_code: data.customer_code,
+      name: data.name,
+      phone: data.phone,
+    },
+    addresses: addrs || [],
+  };
+}
+
+function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
+  const { packages } = usePackageTracking();
+  const { rows: warehouses } = useWarehouses();
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [found, setFound] = useState(null);
+  const [addrId, setAddrId] = useState("");
+  const [picked, setPicked] = useState({});
+  const [fee, setFee] = useState("");
+  const [payType, setPayType] = useState("wallet");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [addrModal, setAddrModal] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setSearched(false);
+    setFound(null);
+    setAddrId("");
+    setPicked({});
+    setFee("");
+    setPayType("wallet");
+    setNote("");
+    setErr("");
+    setSaving(false);
+  }, [open]);
+
+  const customerTks = useMemo(() => {
+    if (!found) return [];
+    const code = String(found.customer.customer_code).toLowerCase();
+    return packages.filter(
+      (p) =>
+        p.status === "Inbound Warehouse" &&
+        customerIdOf(p).toLowerCase() === code,
+    );
+  }, [found, packages]);
+
+  const selectable = customerTks.filter((p) => !activeTks.has(tkKey(p.tk)));
+  const chosen = selectable.filter((p) => picked[tkKey(p.tk)]);
+  const unpaid = chosen.reduce((s, p) => s + shippingFeeOf(p).due, 0);
+  const deliveryFee = Number(fee) || 0;
+  const cashToCollect = unpaid + (payType === "cod" ? deliveryFee : 0);
+  const addr = (found?.addresses || []).find((a) => a.id === addrId);
+
+  async function search() {
+    if (!query.trim()) return;
+    setSearching(true);
+    setErr("");
+    setPicked({});
+    try {
+      const r = await findCustomerForDelivery(query);
+      setFound(r);
+      setSearched(true);
+      const def =
+        (r?.addresses || []).find((a) => a.is_default) || r?.addresses?.[0];
+      setAddrId(def?.id || "");
+    } catch (e) {
+      setErr(e.message || "Search failed");
+    }
+    setSearching(false);
+  }
+
+  async function submit() {
+    setErr("");
+    if (!found) return setErr("សូមស្វែងរក Customer សិន");
+    if (!chosen.length) return setErr("សូមជ្រើសរើស TK យ៉ាងតិច ១");
+    if (!addr) return setErr("សូមជ្រើសរើសអាសយដ្ឋានដឹកជញ្ជូន");
+    setSaving(true);
+    try {
+      await onSubmit(
+        {
+          customer_code: found.customer.customer_code,
+          customer_name: found.customer.name,
+          customer_phone: found.customer.phone || "",
+          address_id: addr.id,
+          receiver_name: addr.recipient_name || found.customer.name,
+          receiver_phone: addr.phone || found.customer.phone || "",
+          address_text: deliveryAddressText(addr),
+          kh_branch_code: addr.kh_branch_code || "",
+          delivery_fee: deliveryFee,
+          payment_type: payType,
+          cash_to_collect: Math.round(cashToCollect * 100) / 100,
+          note: note.trim(),
+        },
+        chosen.map((p) => ({
+          tk: p.tk,
+          fee_due: Math.round(shippingFeeOf(p).due * 100) / 100,
+        })),
+      );
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Request failed");
+      setSaving(false);
+    }
+  }
+
+  if (!open) return null;
+  const allOn =
+    selectable.length > 0 && selectable.every((p) => picked[tkKey(p.tk)]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-ink-900/40"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white w-full max-w-xl h-full flex flex-col shadow-lg"
+      >
+        <div className="px-5 py-4 border-b border-mist-200 flex items-center justify-between">
+          <h3 className="font-display font-bold text-base text-ink-900">
+            Request Delivery
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-600/60 hover:text-ink-900"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          <div>
+            <label className={LABEL_CLS}>Customer ID / Phone</label>
+            <div className="flex gap-2">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && search()}
+                placeholder="e.g. KH-000006 or 012345678"
+                className={INPUT_CLS}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={search}
+                disabled={searching}
+                className={CT_BTN_PRIMARY}
+              >
+                {searching ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Search size={14} />
+                )}
+                Search
+              </button>
+            </div>
+            {searched && !found && (
+              <p className="mt-2 text-sm text-signal-red">
+                រកមិនឃើញ Customer នេះទេ
+              </p>
+            )}
+          </div>
+
+          {!found && !searched && (
+            <div className="text-center text-sm text-ink-600/55 border border-dashed border-mist-200 rounded-md py-10">
+              វាយ Customer ID ដើម្បីមើលទំនិញ Inbound Warehouse
+            </div>
+          )}
+
+          {found && (
+            <>
+              <div className="border border-mist-200 rounded-md p-3 bg-mist-50/60">
+                <div className="font-semibold text-ink-900">
+                  {found.customer.name}
+                </div>
+                <div className="text-xs text-ink-600/60">
+                  {found.customer.customer_code} · {found.customer.phone || "—"}
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className={LABEL_CLS + " !mb-0"}>
+                    Delivery Address
+                  </label>
+                  {supabase && found.customer.uuid && (
+                    <button
+                      type="button"
+                      onClick={() => setAddrModal(true)}
+                      className="text-xs text-signal-blue hover:underline"
+                    >
+                      + Add address
+                    </button>
+                  )}
+                </div>
+                {found.addresses.length === 0 ? (
+                  <p className="text-sm text-ink-600/55">
+                    Customer មិនទាន់មានអាសយដ្ឋានទេ
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {found.addresses.map((a) => (
+                      <label
+                        key={a.id}
+                        className={`flex gap-3 items-start border rounded-md p-3 cursor-pointer ${addrId === a.id ? "border-signal-blue bg-signal-blue/5" : "border-mist-200"}`}
+                      >
+                        <input
+                          type="radio"
+                          checked={addrId === a.id}
+                          onChange={() => setAddrId(a.id)}
+                          className="mt-1"
+                        />
+                        <div className="text-sm">
+                          <div className="font-medium text-ink-900">
+                            {a.label || "Address"}
+                            {a.is_default && (
+                              <span className="ml-2 text-[10px] text-signal-teal">
+                                Default
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-ink-600/70">
+                            {a.recipient_name} · {a.phone}
+                          </div>
+                          <div className="text-xs text-ink-600/55">
+                            {deliveryAddressText(a) || "—"}
+                          </div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className={LABEL_CLS + " !mb-0"}>
+                    Inbound Warehouse ({customerTks.length})
+                  </label>
+                  {selectable.length > 0 && (
+                    <label className="text-xs flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={allOn}
+                        onChange={(e) =>
+                          setPicked(
+                            e.target.checked
+                              ? Object.fromEntries(
+                                  selectable.map((p) => [tkKey(p.tk), true]),
+                                )
+                              : {},
+                          )
+                        }
+                      />
+                      Select all
+                    </label>
+                  )}
+                </div>
+                {customerTks.length === 0 ? (
+                  <p className="text-sm text-ink-600/55 border border-dashed border-mist-200 rounded-md py-6 text-center">
+                    Customer នេះគ្មានទំនិញក្នុង Inbound Warehouse ទេ
+                  </p>
+                ) : (
+                  <div className="border border-mist-200 rounded-md divide-y divide-mist-100">
+                    {customerTks.map((p) => {
+                      const locked = activeTks.has(tkKey(p.tk));
+                      const f = shippingFeeOf(p);
+                      return (
+                        <label
+                          key={p.tk}
+                          className={`flex items-center gap-3 px-3 py-2.5 ${locked ? "opacity-50" : "cursor-pointer hover:bg-mist-50"}`}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={locked}
+                            checked={!!picked[tkKey(p.tk)]}
+                            onChange={(e) =>
+                              setPicked((s) => ({
+                                ...s,
+                                [tkKey(p.tk)]: e.target.checked,
+                              }))
+                            }
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-ink-900">
+                              {p.tk}
+                            </div>
+                            <div className="text-xs text-ink-600/55 truncate">
+                              {p.weight_kg ?? p.weight ?? "—"} KG ·{" "}
+                              {p.cbm ?? "—"} CBM
+                              {p.product_name ? ` · ${p.product_name}` : ""}
+                            </div>
+                          </div>
+                          <div className="text-right text-xs">
+                            {locked ? (
+                              <span className="text-signal-amber">
+                                In delivery
+                              </span>
+                            ) : f.state === "due" ? (
+                              <span className="font-semibold text-[#B87415]">
+                                Due {money(f.due)}
+                              </span>
+                            ) : f.state === "paid" ? (
+                              <span className="text-signal-teal">Paid</span>
+                            ) : (
+                              <span className="text-ink-600/40">—</span>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={LABEL_CLS}>Delivery Fee ($)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={fee}
+                    onChange={(e) => setFee(e.target.value)}
+                    className={INPUT_CLS}
+                    placeholder="0.00"
+                  />
+                </div>
+                <div>
+                  <label className={LABEL_CLS}>Payment Type</label>
+                  <select
+                    value={payType}
+                    onChange={(e) => setPayType(e.target.value)}
+                    className={INPUT_CLS}
+                  >
+                    {DELIVERY_PAYMENT_TYPES.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label className={LABEL_CLS}>Note</label>
+                <textarea
+                  rows={2}
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  className={INPUT_CLS}
+                />
+              </div>
+            </>
+          )}
+
+          {err && (
+            <div className="flex items-center gap-2 text-sm text-signal-red bg-signal-red/10 rounded-md px-3 py-2">
+              <TriangleAlert size={14} className="shrink-0" />
+              {err}
+            </div>
+          )}
+        </div>
+
+        {found && (
+          <div className="border-t border-mist-200 px-5 py-4 space-y-3">
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-600/70">Selected TK</span>
+              <span className="font-medium">{chosen.length}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-600/70">Unpaid shipping fee</span>
+              <span className="font-medium">{money(unpaid)}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-600/70">
+                Delivery fee ({payType === "cod" ? "COD" : "Wallet"})
+              </span>
+              <span className="font-medium">{money(deliveryFee)}</span>
+            </div>
+            <div className="flex justify-between text-base font-bold text-ink-900">
+              <span>Cash to collect</span>
+              <span>{money(cashToCollect)}</span>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} className={CT_BTN_GHOST}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={saving || !chosen.length}
+                className={CT_BTN_PRIMARY}
+              >
+                {saving
+                  ? "Submitting..."
+                  : `Request Delivery (${chosen.length})`}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      {addrModal && found?.customer.uuid && (
+        <CustomerAddressCreateModal
+          customer={{
+            id: found.customer.uuid,
+            customer_code: found.customer.customer_code,
+            name: found.customer.name,
+          }}
+          warehouses={warehouses}
+          onClose={() => setAddrModal(false)}
+          onDone={async () => {
+            setAddrModal(false);
+            const r = await findCustomerForDelivery(
+              found.customer.customer_code,
+            );
+            if (r) setFound(r);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeliveryDetailModal({ row, onClose }) {
+  const { findPackage } = usePackageTracking();
+  if (!row) return null;
+  return (
+    <div
+      className="fixed inset-0 bg-ink-900/40 z-50 flex items-center justify-center px-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-md shadow-lg w-full max-w-lg max-h-[90vh] overflow-y-auto"
+      >
+        <div className="px-5 py-4 border-b border-mist-200 flex items-center justify-between">
+          <h3 className="font-display font-bold text-base text-ink-900">
+            {row.delivery_no}
+          </h3>
+          <DeliveryStatusBadge status={row.status} />
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <div>
+            <span className="text-ink-600/60">Customer: </span>
+            {row.customer_name} ({row.customer_code})
+          </div>
+          <div>
+            <span className="text-ink-600/60">Receiver: </span>
+            {row.receiver_name} · {row.receiver_phone}
+          </div>
+          <div>
+            <span className="text-ink-600/60">Address: </span>
+            {row.address_text || "—"}
+          </div>
+          <div>
+            <span className="text-ink-600/60">Payment: </span>
+            {row.payment_type === "cod" ? "COD" : "Wallet"} · Delivery fee{" "}
+            {money(row.delivery_fee)}
+          </div>
+          <div>
+            <span className="text-ink-600/60">Cash to collect: </span>
+            <b>{money(row.cash_to_collect)}</b>
+          </div>
+          {row.driver && (
+            <div>
+              <span className="text-ink-600/60">Driver: </span>
+              {row.driver}
+            </div>
+          )}
+          {row.note && (
+            <div>
+              <span className="text-ink-600/60">Note: </span>
+              {row.note}
+            </div>
+          )}
+          {row.cancel_reason && (
+            <div className="text-signal-red">
+              Cancelled: {row.cancel_reason}
+            </div>
+          )}
+          <div className="border border-mist-200 rounded-md divide-y divide-mist-100">
+            {(row.items || []).map((i) => {
+              const p = findPackage(i.tk);
+              return (
+                <div key={i.tk} className="flex justify-between px-3 py-2">
+                  <span className="font-medium">{i.tk}</span>
+                  <span className="text-xs text-ink-600/60">
+                    {p ? `${p.weight_kg ?? p.weight ?? "—"} KG` : ""}{" "}
+                    {Number(i.fee_due) > 0 ? `· Due ${money(i.fee_due)}` : ""}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="flex justify-end px-5 py-4 border-t border-mist-200">
+          <button type="button" onClick={onClose} className={CT_BTN_GHOST}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeliveryDispatchModal({ row, onClose, onConfirm }) {
+  const [driver, setDriver] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    setDriver("");
+    setErr("");
+    setBusy(false);
+  }, [row]);
+  if (!row) return null;
+  return (
+    <div
+      className="fixed inset-0 bg-ink-900/40 z-50 flex items-center justify-center px-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white rounded-md shadow-lg w-full max-w-md"
+      >
+        <div className="px-5 py-4 border-b border-mist-200">
+          <h3 className="font-display font-bold text-base text-ink-900">
+            Dispatch {row.delivery_no}
+          </h3>
+        </div>
+        <div className="p-5 space-y-3">
+          <div>
+            <label className={LABEL_CLS}>Driver / Courier</label>
+            <input
+              value={driver}
+              onChange={(e) => setDriver(e.target.value)}
+              className={INPUT_CLS}
+              autoFocus
+            />
+          </div>
+          {err && <div className="text-sm text-signal-red">{err}</div>}
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-mist-200">
+          <button type="button" onClick={onClose} className={CT_BTN_GHOST}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            className={CT_BTN_PRIMARY}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onConfirm(row, driver.trim());
+                onClose();
+              } catch (e) {
+                setErr(e.message);
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Processing..." : "Dispatch"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Delivery Dashboard analytics (summary / couriers / fee / per-day) ----
+const DELIVERY_RANGES = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "Last 7 days" },
+  { key: "30d", label: "Last 30 days" },
+  { key: "month", label: "This month" },
+  { key: "all", label: "All time" },
+];
+
+function deliveryRangeStart(key) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  if (key === "today") return d;
+  if (key === "7d") return new Date(d.getTime() - 6 * 86400000);
+  if (key === "30d") return new Date(d.getTime() - 29 * 86400000);
+  if (key === "month") return new Date(d.getFullYear(), d.getMonth(), 1);
+  return null; // all time
+}
+
+function deliveryDayKey(d) {
+  return d.toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
+}
+
+function computeDeliveryStats(rows, rangeKey) {
+  const fee = (r) => Number(r.delivery_fee) || 0;
+  const delivered = rows.filter((r) => r.status === "Delivered");
+  const inDel = rows.filter((r) => r.status === "In Delivery");
+  const pending = rows.filter((r) => r.status === "Pending");
+  const cancelled = rows.filter((r) => r.status === "Cancelled");
+  const nonCancelled = rows.length - cancelled.length;
+  const sum = (arr, f) => arr.reduce((s, r) => s + f(r), 0);
+
+  // courier performance (grouped by driver)
+  const map = new Map();
+  rows.forEach((r) => {
+    const name = r.driver || "Unassigned";
+    if (!map.has(name))
+      map.set(name, { name, total: 0, delivered: 0, fee: 0, cash: 0 });
+    const c = map.get(name);
+    c.total += 1;
+    if (r.status === "Delivered") {
+      c.delivered += 1;
+      c.fee += fee(r);
+      c.cash += Number(r.cash_to_collect) || 0;
+    }
+  });
+  const couriers = [...map.values()].sort(
+    (a, b) => b.total - a.total || a.name.localeCompare(b.name),
+  );
+
+  // fee by payment (delivered only)
+  const wallet = sum(
+    delivered.filter((r) => r.payment_type !== "cod"),
+    fee,
+  );
+  const cod = sum(
+    delivered.filter((r) => r.payment_type === "cod"),
+    fee,
+  );
+
+  // delivered per day
+  let days = 30;
+  if (rangeKey === "today") days = 7;
+  else if (rangeKey === "7d") days = 7;
+  else if (rangeKey === "month") days = new Date().getDate();
+  const perDay = [];
+  const idx = {};
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - i);
+    const key = deliveryDayKey(d);
+    idx[key] = perDay.length;
+    perDay.push({
+      key,
+      full: d.toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }),
+      count: 0,
+      label: d
+        .toLocaleDateString("en-US", { month: "short", day: "2-digit" })
+        .replace(" ", "-"),
+    });
+  }
+  delivered.forEach((r) => {
+    const d = new Date(r.requested_at);
+    if (Number.isNaN(d.getTime())) return;
+    const i = idx[deliveryDayKey(d)];
+    if (i !== undefined) perDay[i].count += 1;
+  });
+
+  return {
+    total: rows.length,
+    delivered: delivered.length,
+    inDelivery: inDel.length,
+    pending: pending.length,
+    cancelled: cancelled.length,
+    nonCancelled,
+    rate: nonCancelled ? (delivered.length / nonCancelled) * 100 : 0,
+    feeEarned: sum(delivered, fee),
+    feePending: sum([...pending, ...inDel], fee),
+    notYetDelivered: pending.length + inDel.length,
+    couriers,
+    wallet,
+    cod,
+    perDay,
+  };
+}
+
+function DeliverySummaryCard({ s, waiting }) {
+  const pct = (n) => (s.total ? Math.round((n / s.total) * 100) : 0);
+  const segs = [
+    {
+      label: "Delivered",
+      n: s.delivered,
+      bar: "bg-signal-teal",
+      dot: "bg-signal-teal",
+    },
+    {
+      label: "In Delivery",
+      n: s.inDelivery,
+      bar: "bg-signal-blue",
+      dot: "bg-signal-blue",
+    },
+    {
+      label: "Pending",
+      n: s.pending,
+      bar: "bg-signal-amber",
+      dot: "bg-signal-amber",
+    },
+    {
+      label: "Cancelled",
+      n: s.cancelled,
+      bar: "bg-ink-600/20",
+      dot: "bg-ink-600/30",
+    },
+  ];
+  return (
+    <div className={CT_CARD + " p-5"}>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+        <div>
+          <div className="text-xs text-ink-600/60">Delivered rate</div>
+          <div className="text-3xl font-display font-bold text-ink-900 mt-1">
+            {s.rate.toFixed(1)}%
+          </div>
+          <div className="text-xs text-ink-600/55 mt-0.5">
+            {s.delivered} of {s.nonCancelled} non-cancelled
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-ink-600/60">Fee earned</div>
+          <div className="text-3xl font-display font-bold text-ink-900 mt-1">
+            {money(s.feeEarned)}
+          </div>
+          <div className="text-xs text-ink-600/55 mt-0.5">
+            From {s.delivered} delivered
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-ink-600/60">Fee pending</div>
+          <div className="text-3xl font-display font-bold text-ink-900 mt-1">
+            {money(s.feePending)}
+          </div>
+          <div className="text-xs text-ink-600/55 mt-0.5">
+            From {s.notYetDelivered} not yet delivered
+          </div>
+        </div>
+        <div>
+          <div className="text-xs text-ink-600/60">Ready (Inbound WH)</div>
+          <div className="text-3xl font-display font-bold text-ink-900 mt-1">
+            {waiting}
+          </div>
+          <div className="text-xs text-ink-600/55 mt-0.5">
+            TKs waiting to be requested
+          </div>
+        </div>
+      </div>
+
+      <div className="flex h-2 rounded-full overflow-hidden bg-mist-100 mt-5">
+        {segs.map(
+          (g) =>
+            g.n > 0 && (
+              <div
+                key={g.label}
+                className={g.bar}
+                style={{ width: `${(g.n / s.total) * 100}%` }}
+                title={`${g.label}: ${g.n}`}
+              />
+            ),
+        )}
+      </div>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-5 mt-3">
+        {segs.map((g) => (
+          <div key={g.label}>
+            <div className="flex items-center gap-1.5 text-xs text-ink-600/70">
+              <span className={`w-2 h-2 rounded-full ${g.dot}`} />
+              {g.label}
+            </div>
+            <div className="text-sm font-semibold text-ink-900 mt-0.5">
+              {g.n}{" "}
+              <span className="text-xs font-normal text-ink-600/50">
+                {pct(g.n)}%
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-mist-200 mt-4 pt-3 text-xs text-ink-600/55">
+        Counted by delivery requested date
+      </div>
+    </div>
+  );
+}
+
+function DeliveryCourierCard({ couriers, expanded = false, onClose }) {
+  const [all, setAll] = useState(expanded);
+  const shownRows = all ? couriers : couriers.slice(0, 8);
+
+  function exportCsv() {
+    const head = [
+      "Courier",
+      "Total deliveries",
+      "Delivered",
+      "Delivered %",
+      "Fee earned",
+      "Cash collected",
+    ];
+    const lines = couriers.map((c) =>
+      [
+        `"${c.name.replace(/"/g, '""')}"`,
+        c.total,
+        c.delivered,
+        c.total ? Math.round((c.delivered / c.total) * 100) : 0,
+        c.fee.toFixed(2),
+        c.cash.toFixed(2),
+      ].join(","),
+    );
+    const blob = new Blob(["\ufeff" + [head.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "courier-performance.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  return (
+    <div className={CT_CARD + " overflow-hidden"}>
+      <div className="flex items-center justify-between px-5 py-4">
+        <h2 className="text-sm font-semibold text-ink-900">
+          Courier performance
+        </h2>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={!couriers.length}
+            title="Export CSV"
+            className="text-ink-600/55 hover:text-ink-900 disabled:opacity-40"
+          >
+            <Download size={14} />
+          </button>
+          {couriers.length > 8 && (
+            <button
+              type="button"
+              onClick={() => setAll((v) => !v)}
+              className="text-xs font-medium text-signal-blue hover:underline"
+            >
+              {all ? "Show less" : "View All"}
+            </button>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-ink-600/55 hover:text-ink-900"
+              title="Close"
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-mist-50 text-[11px] uppercase tracking-wide text-ink-600/55">
+              <th className="text-left font-medium px-5 py-2.5">Courier</th>
+              <th className="text-left font-medium px-3 py-2.5">Total</th>
+              <th className="text-left font-medium px-3 py-2.5 w-[34%]">
+                Delivered
+              </th>
+              <th className="text-right font-medium px-5 py-2.5">Fee earned</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shownRows.map((c) => {
+              const p = c.total ? Math.round((c.delivered / c.total) * 100) : 0;
+              const tone =
+                p >= 70
+                  ? "bg-signal-teal"
+                  : p >= 30
+                    ? "bg-signal-amber"
+                    : "bg-signal-red";
+              return (
+                <tr
+                  key={c.name}
+                  className="border-t border-mist-200 hover:bg-mist-50/70"
+                >
+                  <td className="px-5 py-3 font-medium text-ink-900">
+                    {c.name}
+                  </td>
+                  <td className="px-3 py-3 text-ink-700">{c.total}</td>
+                  <td className="px-3 py-3">
+                    <div className="flex items-center gap-2 text-xs text-ink-600/70">
+                      <span className="w-6 text-right">{c.delivered}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-mist-100 overflow-hidden">
+                        <div
+                          className={`h-full ${tone}`}
+                          style={{ width: `${p}%` }}
+                        />
+                      </div>
+                      <span className="w-9 text-right">{p}%</span>
+                    </div>
+                  </td>
+                  <td
+                    className={`px-5 py-3 text-right ${c.fee > 0 ? "text-ink-900 font-medium" : "text-ink-600/30"}`}
+                  >
+                    {money(c.fee)}
+                  </td>
+                </tr>
+              );
+            })}
+            {!shownRows.length && (
+              <tr>
+                <td
+                  colSpan={4}
+                  className="text-center text-sm text-ink-600/55 py-8"
+                >
+                  No deliveries in this range
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DeliveryFeeByPayment({ wallet, cod }) {
+  const total = wallet + cod;
+  const p = (n) => (total ? Math.round((n / total) * 100) : 0);
+  const rows = [
+    { label: "E-Wallet", v: wallet, dot: "bg-signal-blue" },
+    { label: "Cash on delivery", v: cod, dot: "bg-signal-blue/40" },
+  ];
+  return (
+    <div className={CT_CARD + " p-5"}>
+      <h2 className="text-sm font-semibold text-ink-900">Fee by payment</h2>
+      <div className="text-xs text-ink-600/55">Delivered only</div>
+      <div className="flex h-2 rounded-full overflow-hidden bg-mist-100 mt-3">
+        <div className="bg-signal-blue" style={{ width: `${p(wallet)}%` }} />
+        <div className="bg-signal-blue/40" style={{ width: `${p(cod)}%` }} />
+      </div>
+      <div className="mt-3 divide-y divide-mist-200">
+        {rows.map((r) => (
+          <div
+            key={r.label}
+            className="flex items-center justify-between py-2 text-sm"
+          >
+            <span className="flex items-center gap-2 text-ink-700">
+              <span className={`w-2 h-2 rounded-full ${r.dot}`} />
+              {r.label}
+            </span>
+            <span className="text-ink-900">
+              {money(r.v)}{" "}
+              <span className="text-xs text-ink-600/50">{p(r.v)}%</span>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DeliveryPerDayChart({ data }) {
+  const [hover, setHover] = useState(null);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setReady(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+  const max = Math.max(1, ...data.map((d) => d.count));
+  const step = Math.ceil(data.length / 8);
+  const n = data.length;
+  const h = hover !== null ? data[hover] : null;
+  // tooltip anchor: keep inside the card at both edges
+  const pos = hover !== null ? ((hover + 0.5) / n) * 100 : 0;
+  const shift = pos < 12 ? "0%" : pos > 88 ? "-100%" : "-50%";
+  return (
+    <div className={CT_CARD + " p-5"}>
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-ink-900">
+          Delivered per day
+        </h2>
+        <span className="text-xs text-ink-600/55">By requested date</span>
+      </div>
+
+      <div className="relative mt-4" onMouseLeave={() => setHover(null)}>
+        {/* grid lines */}
+        <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="border-t border-dashed border-mist-200" />
+          ))}
+        </div>
+
+        {/* tooltip */}
+        <div
+          className={`absolute z-10 pointer-events-none transition-all duration-150 ease-out ${h ? "opacity-100" : "opacity-0"}`}
+          style={{
+            left: `${pos}%`,
+            top: 0,
+            transform: `translate(${shift}, -110%)`,
+          }}
+        >
+          {h && (
+            <div className="rounded-md bg-ink-900 text-white px-2.5 py-1.5 text-xs shadow-lg whitespace-nowrap">
+              <div className="text-white/70">{h.full}</div>
+              <div className="font-semibold">{h.count} delivered</div>
+            </div>
+          )}
+        </div>
+
+        <div className="relative flex items-end gap-[3px] h-36">
+          {data.map((d, i) => (
+            <div
+              key={d.key}
+              className="flex-1 h-full flex items-end cursor-pointer relative"
+              onMouseEnter={() => setHover(i)}
+              onFocus={() => setHover(i)}
+              onTouchStart={() => setHover(i)}
+            >
+              {hover === i && (
+                <div className="absolute inset-0 bg-signal-blue/5 rounded-sm" />
+              )}
+              <div
+                className={`relative w-full rounded-t-sm transition-all duration-500 ease-out ${hover === i ? "bg-signal-blue" : hover !== null ? "bg-signal-blue/20" : "bg-signal-blue/35"}`}
+                style={{
+                  height: ready
+                    ? d.count
+                      ? `${Math.max(4, (d.count / max) * 100)}%`
+                      : "2px"
+                    : "2px",
+                  transitionDelay: ready ? `${Math.min(i * 12, 360)}ms` : "0ms",
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-[3px] mt-1.5">
+        {data.map((d, i) => (
+          <div
+            key={d.key}
+            className={`flex-1 text-center text-[9px] whitespace-nowrap overflow-visible transition-colors ${hover === i ? "text-ink-900 font-medium" : "text-ink-600/50"}`}
+          >
+            {i % step === 0 ? d.label : ""}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DeliveryReportCards({ active, onPick, pending = 0 }) {
+  const items = [
+    {
+      key: "pending",
+      icon: "Clock",
+      title: "Pending",
+      sub: "Awaiting dispatch",
+      badge: pending,
+      tone: "amber",
+    },
+    {
+      key: "all",
+      icon: "Table2",
+      title: "All deliveries",
+      sub: "Operational view",
+    },
+    {
+      key: "couriers",
+      icon: "Bike",
+      title: "Courier performance",
+      sub: "By rider",
+    },
+    {
+      key: "sales",
+      icon: "DollarSign",
+      title: "Sale performance",
+      sub: "Fees earned",
+    },
+  ];
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-ink-600/55 mb-2">
+        Open a report
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {items.map((it) => {
+          const Icon = Icons[it.icon] || Icons.Circle;
+          const on = active === it.key;
+          const amber = it.tone === "amber";
+          return (
+            <button
+              key={it.key}
+              type="button"
+              onClick={() => onPick(it.key)}
+              className={`text-left flex items-center gap-3 px-4 py-3 rounded-md border bg-white transition-all duration-150 hover:bg-mist-50 hover:-translate-y-px ${on ? "border-signal-blue ring-1 ring-signal-blue/30" : "border-mist-200"}`}
+            >
+              <span
+                className={`w-9 h-9 rounded-md flex items-center justify-center ${amber ? "bg-signal-amber/15 text-signal-amber" : "bg-mist-100 text-ink-600/70"}`}
+              >
+                <Icon size={16} />
+              </span>
+              <span className="leading-tight flex-1 min-w-0">
+                <span className="block text-sm font-medium text-ink-900">
+                  {it.title}
+                </span>
+                <span className="block text-xs text-ink-600/55">{it.sub}</span>
+              </span>
+              {it.badge > 0 && (
+                <span className="shrink-0 min-w-[22px] h-[22px] px-1.5 rounded-full bg-signal-amber text-white text-xs font-semibold flex items-center justify-center">
+                  {it.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DeliverySalesReport({ rows, onClose }) {
+  const data = useMemo(() => {
+    const map = new Map();
+    rows
+      .filter((r) => r.status === "Delivered")
+      .forEach((r) => {
+        const d = new Date(r.delivered_at || r.requested_at);
+        if (Number.isNaN(d.getTime())) return;
+        const k = deliveryDayKey(d);
+        if (!map.has(k))
+          map.set(k, { day: k, n: 0, wallet: 0, cod: 0, cash: 0 });
+        const x = map.get(k);
+        const fee = Number(r.delivery_fee) || 0;
+        x.n += 1;
+        if (r.payment_type === "cod") x.cod += fee;
+        else x.wallet += fee;
+        x.cash += Number(r.cash_to_collect) || 0;
+      });
+    return [...map.values()].sort((a, b) => b.day.localeCompare(a.day));
+  }, [rows]);
+  const tot = data.reduce(
+    (t, x) => ({
+      n: t.n + x.n,
+      wallet: t.wallet + x.wallet,
+      cod: t.cod + x.cod,
+      cash: t.cash + x.cash,
+    }),
+    { n: 0, wallet: 0, cod: 0, cash: 0 },
+  );
+
+  function exportCsv() {
+    const lines = data.map((x) =>
+      [
+        x.day,
+        x.n,
+        x.wallet.toFixed(2),
+        x.cod.toFixed(2),
+        (x.wallet + x.cod).toFixed(2),
+        x.cash.toFixed(2),
+      ].join(","),
+    );
+    const head = "Date,Delivered,Wallet fee,COD fee,Fee earned,Cash collected";
+    const blob = new Blob(["\ufeff" + [head, ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sale-performance.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const th = "font-medium px-4 py-2.5 text-right";
+  return (
+    <div className={CT_CARD + " overflow-hidden"}>
+      <div className="flex items-center justify-between px-5 py-4">
+        <h2 className="text-sm font-semibold text-ink-900">Sale performance</h2>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={exportCsv}
+            disabled={!data.length}
+            title="Export CSV"
+            className="text-ink-600/55 hover:text-ink-900 disabled:opacity-40"
+          >
+            <Download size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-600/55 hover:text-ink-900"
+            title="Close"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-mist-50 text-[11px] uppercase tracking-wide text-ink-600/55">
+              <th className="text-left font-medium px-5 py-2.5">Date</th>
+              <th className={th}>Delivered</th>
+              <th className={th}>Wallet fee</th>
+              <th className={th}>COD fee</th>
+              <th className={th}>Fee earned</th>
+              <th className={th + " !pr-5"}>Cash collected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((x) => (
+              <tr
+                key={x.day}
+                className="border-t border-mist-200 hover:bg-mist-50/70"
+              >
+                <td className="px-5 py-2.5 text-ink-900">{x.day}</td>
+                <td className="px-4 py-2.5 text-right">{x.n}</td>
+                <td className="px-4 py-2.5 text-right">{money(x.wallet)}</td>
+                <td className="px-4 py-2.5 text-right">{money(x.cod)}</td>
+                <td className="px-4 py-2.5 text-right font-medium text-ink-900">
+                  {money(x.wallet + x.cod)}
+                </td>
+                <td className="px-4 py-2.5 pr-5 text-right">{money(x.cash)}</td>
+              </tr>
+            ))}
+            {data.length > 0 && (
+              <tr className="border-t border-mist-200 bg-mist-50 font-semibold text-ink-900">
+                <td className="px-5 py-2.5">Total</td>
+                <td className="px-4 py-2.5 text-right">{tot.n}</td>
+                <td className="px-4 py-2.5 text-right">{money(tot.wallet)}</td>
+                <td className="px-4 py-2.5 text-right">{money(tot.cod)}</td>
+                <td className="px-4 py-2.5 text-right">
+                  {money(tot.wallet + tot.cod)}
+                </td>
+                <td className="px-4 py-2.5 pr-5 text-right">
+                  {money(tot.cash)}
+                </td>
+              </tr>
+            )}
+            {!data.length && (
+              <tr>
+                <td
+                  colSpan={6}
+                  className="text-center text-sm text-ink-600/55 py-8"
+                >
+                  No delivered orders in this range
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DeliveryPage() {
+  const { user } = useAuth();
+  const { packages, upsertPackage, logStatus } = usePackageTracking();
+  const { rows, loading, error, reload, create, patch } = useDeliveries();
+  const [tab, setTab] = useState("All");
+  const [search, setSearch] = useState("");
+  const [drawer, setDrawer] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [dispatch, setDispatch] = useState(null);
+  const [confirm, setConfirm] = useState(null); // {row, kind}
+  const [range, setRange] = useState("30d");
+  const [courierF, setCourierF] = useState("");
+  const [payF, setPayF] = useState("");
+  const [report, setReport] = useState(null); // "couriers" | "sales"
+
+  const canCreate = hasPermission(user, "delivery.create");
+  const canEdit = hasPermission(user, "delivery.edit");
+  const operator = user?.name || user?.email || "System";
+
+  const activeTks = useMemo(() => {
+    const s = new Set();
+    rows
+      .filter((r) => DELIVERY_ACTIVE.includes(r.status))
+      .forEach((r) => (r.items || []).forEach((i) => s.add(tkKey(i.tk))));
+    return s;
+  }, [rows]);
+
+  // Dashboard filters (date / courier / payment). activeTks above still
+  // uses ALL rows so the TK lock never depends on the filter.
+  const scoped = useMemo(() => {
+    const start = deliveryRangeStart(range);
+    return rows.filter((r) => {
+      if (start) {
+        const t = new Date(r.requested_at);
+        if (Number.isNaN(t.getTime()) || t < start) return false;
+      }
+      if (courierF && (r.driver || "Unassigned") !== courierF) return false;
+      if (payF && (r.payment_type || "wallet") !== payF) return false;
+      return true;
+    });
+  }, [rows, range, courierF, payF]);
+
+  const courierOptions = useMemo(
+    () => [...new Set(rows.map((r) => r.driver || "Unassigned"))].sort(),
+    [rows],
+  );
+  const stats = useMemo(
+    () => computeDeliveryStats(scoped, range),
+    [scoped, range],
+  );
+  const filtered = range !== "30d" || !!courierF || !!payF;
+
+  const counts = useMemo(() => {
+    const c = { All: scoped.length };
+    DELIVERY_STATUSES.forEach(
+      (s) => (c[s] = scoped.filter((r) => r.status === s).length),
+    );
+    return c;
+  }, [scoped]);
+
+  const waiting = useMemo(
+    () =>
+      packages.filter(
+        (p) => p.status === "Inbound Warehouse" && !activeTks.has(tkKey(p.tk)),
+      ).length,
+    [packages, activeTks],
+  );
+
+  const shown = scoped.filter((r) => {
+    if (tab !== "All" && r.status !== tab) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [
+      r.delivery_no,
+      r.customer_code,
+      r.customer_name,
+      r.receiver_phone,
+      ...(r.items || []).map((i) => i.tk),
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+
+  async function submitRequest(d, items) {
+    if (!canCreate) throw new Error("អ្នកគ្មានសិទ្ធិ Request Delivery ទេ");
+    const created = await create({ ...d, requested_by: operator }, items);
+    emitCBToast(
+      "ok",
+      "Delivery requested",
+      `${created.delivery_no} · ${items.length} TK`,
+    );
+    // a fresh request starts as Pending → jump straight to it
+    setTab("Pending");
+    setReport("pending");
+  }
+
+  async function doDispatch(row, driver) {
+    await patch(row.id, {
+      status: "In Delivery",
+      driver,
+      dispatched_at: new Date().toISOString(),
+    });
+    emitCBToast("ok", "In Delivery", row.delivery_no);
+  }
+
+  async function doDelivered(row) {
+    await patch(row.id, {
+      status: "Delivered",
+      delivered_at: new Date().toISOString(),
+    });
+    for (const i of row.items || []) {
+      const values = { tk: i.tk, status: "Completed" };
+      const p = packages.find((x) => tkKey(x.tk) === tkKey(i.tk));
+      // Cash collected at the door settles the shipping fee.
+      if (p && shippingFeeOf(p).state === "due")
+        values.paid_amount = p.freight_fee;
+      try {
+        await upsertPackage(values);
+        logStatus(i.tk, "Completed", operator, `Delivered ${row.delivery_no}`);
+      } catch {
+        /* the delivery itself is already recorded */
+      }
+    }
+    emitCBToast("ok", "Delivered", row.delivery_no);
+  }
+
+  async function doCancel(row, reason) {
+    await patch(row.id, { status: "Cancelled", cancel_reason: reason });
+  }
+
+  const columns = [
+    {
+      key: "delivery_no",
+      label: "Delivery No",
+      render: (r) => (
+        <button
+          type="button"
+          onClick={() => setDetail(r)}
+          className="font-medium text-signal-blue hover:underline"
+        >
+          {r.delivery_no}
+        </button>
+      ),
+    },
+    {
+      key: "customer",
+      label: "Customer",
+      render: (r) => (
+        <div className="leading-tight">
+          <div className="font-medium">{r.customer_name}</div>
+          <div className="text-[11px] text-ink-600/55">{r.customer_code}</div>
+        </div>
+      ),
+    },
+    {
+      key: "address",
+      label: "Address",
+      render: (r) => (
+        <div className="max-w-[240px] truncate" title={r.address_text}>
+          {r.address_text || "—"}
+        </div>
+      ),
+    },
+    { key: "tks", label: "TKs", render: (r) => (r.items || []).length },
+    {
+      key: "payment",
+      label: "Payment",
+      render: (r) => (r.payment_type === "cod" ? "COD" : "Wallet"),
+    },
+    {
+      key: "cash",
+      label: "Cash to collect",
+      render: (r) => money(r.cash_to_collect),
+    },
+    {
+      key: "status",
+      label: "Status",
+      render: (r) => <DeliveryStatusBadge status={r.status} />,
+    },
+    {
+      key: "requested_at",
+      label: "Requested",
+      render: (r) => formatIso(r.requested_at),
+    },
+  ];
+
+  const actions = canEdit
+    ? (r) => (
+        <div className="flex gap-1.5 justify-end">
+          {r.status === "Pending" && (
+            <>
+              <button
+                type="button"
+                className={CT_BTN_PRIMARY + " !px-2.5 !py-1 !text-xs"}
+                onClick={() => setDispatch(r)}
+              >
+                Dispatch
+              </button>
+              <button
+                type="button"
+                className={CT_BTN_DANGER + " !px-2.5 !py-1 !text-xs"}
+                onClick={() => setConfirm({ row: r, kind: "cancel" })}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+          {r.status === "In Delivery" && (
+            <>
+              <button
+                type="button"
+                className={CT_BTN_OK + " !px-2.5 !py-1 !text-xs"}
+                onClick={() => setConfirm({ row: r, kind: "done" })}
+              >
+                Delivered
+              </button>
+              <button
+                type="button"
+                className={CT_BTN_DANGER + " !px-2.5 !py-1 !text-xs"}
+                onClick={() => setConfirm({ row: r, kind: "cancel" })}
+              >
+                Cancel
+              </button>
+            </>
+          )}
+        </div>
+      )
+    : undefined;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="font-display font-bold text-xl text-ink-900">
+          Delivery Dashboard
+        </h1>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={reload}
+            title="Refresh"
+            className="p-2 rounded-md text-ink-600/60 hover:bg-mist-100 hover:text-ink-900"
+          >
+            <Icons.RefreshCw size={15} />
+          </button>
+          {canCreate && (
+            <button
+              type="button"
+              onClick={() => setDrawer(true)}
+              className={CT_BTN_PRIMARY}
+            >
+              <Plus size={14} /> Request Delivery
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className={CT_CARD + " px-4 py-3 flex items-center gap-2 flex-wrap"}>
+        <Icons.CalendarDays size={15} className="text-signal-blue" />
+        <select
+          value={range}
+          onChange={(e) => setRange(e.target.value)}
+          className={INPUT_CLS + " !w-auto !py-1.5"}
+        >
+          {DELIVERY_RANGES.map((r) => (
+            <option key={r.key} value={r.key}>
+              Requested: {r.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={courierF}
+          onChange={(e) => setCourierF(e.target.value)}
+          className={INPUT_CLS + " !w-auto !py-1.5"}
+        >
+          <option value="">All couriers</option>
+          {courierOptions.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <select
+          value={payF}
+          onChange={(e) => setPayF(e.target.value)}
+          className={INPUT_CLS + " !w-auto !py-1.5"}
+        >
+          <option value="">All payments</option>
+          <option value="wallet">Wallet</option>
+          <option value="cod">COD</option>
+        </select>
+        {filtered && (
+          <button
+            type="button"
+            onClick={() => {
+              setRange("30d");
+              setCourierF("");
+              setPayF("");
+            }}
+            className="inline-flex items-center gap-1 text-sm font-medium text-signal-red bg-signal-red/10 hover:bg-signal-red/15 rounded-md px-3 py-1.5"
+          >
+            <X size={13} /> Clear
+          </button>
+        )}
+      </div>
+
+      <DeliveryReportCards
+        active={report}
+        pending={stats.pending}
+        onPick={(k) => {
+          if (k === "all") setTab("All");
+          if (k === "pending") setTab("Pending");
+          setReport((cur) => (cur === k ? null : k));
+        }}
+      />
+
+      {/* Overview (default): summary + fee + per-day chart only */}
+      {report === null && (
+        <>
+          <DeliverySummaryCard s={stats} waiting={waiting} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+            <DeliveryFeeByPayment wallet={stats.wallet} cod={stats.cod} />
+            <DeliveryPerDayChart data={stats.perDay} />
+          </div>
+        </>
+      )}
+
+      {/* Separate sections — shown only after clicking the menu card */}
+      {report === "couriers" && (
+        <DeliveryCourierCard
+          couriers={stats.couriers}
+          expanded
+          onClose={() => setReport(null)}
+        />
+      )}
+      {report === "sales" && (
+        <DeliverySalesReport rows={scoped} onClose={() => setReport(null)} />
+      )}
+
+      {error && (
+        <div className="flex items-center gap-2 text-sm text-signal-red bg-signal-red/10 rounded-md px-3 py-2">
+          <TriangleAlert size={14} className="shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {(report === "all" || report === "pending") && (
+        <div id="delivery-list" className={CT_CARD}>
+          <div className="flex items-center justify-between flex-wrap gap-3 px-4 pt-3 border-b border-mist-200">
+            <div className="flex gap-1 overflow-x-auto">
+              {["All", ...DELIVERY_STATUSES].map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTab(t)}
+                  className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 -mb-px ${tab === t ? "border-signal-blue text-signal-blue font-medium" : "border-transparent text-ink-600/60 hover:text-ink-900"}`}
+                >
+                  {t} <span className="text-xs opacity-60">{counts[t]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="pb-2">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search delivery / customer / TK"
+                className={INPUT_CLS + " !w-64"}
+              />
+            </div>
+          </div>
+          <DataTable
+            columns={columns}
+            rows={shown}
+            loading={loading}
+            rowActions={actions}
+          />
+          {!loading && shown.length === 0 && (
+            <div className="text-center text-sm text-ink-600/55 py-10">
+              មិនមានទិន្នន័យ Delivery ទេ
+            </div>
+          )}
+        </div>
+      )}
+
+      <RequestDeliveryDrawer
+        open={drawer}
+        onClose={() => setDrawer(false)}
+        activeTks={activeTks}
+        onSubmit={submitRequest}
+      />
+      <DeliveryDetailModal row={detail} onClose={() => setDetail(null)} />
+      <DeliveryDispatchModal
+        row={dispatch}
+        onClose={() => setDispatch(null)}
+        onConfirm={doDispatch}
+      />
+      <ConfirmModal
+        open={!!confirm}
+        title={
+          confirm?.kind === "done" ? "Mark as Delivered" : "Cancel Delivery"
+        }
+        message={
+          confirm?.kind === "done"
+            ? `បញ្ជាក់ថា ${confirm?.row?.delivery_no} បានដឹកដល់ហើយ? TK ទាំងអស់នឹងប្តូរទៅ Completed។`
+            : `បោះបង់ ${confirm?.row?.delivery_no}? TK នឹងអាច Request ម្តងទៀតបាន។`
+        }
+        confirmLabel={
+          confirm?.kind === "done" ? "Delivered" : "Cancel Delivery"
+        }
+        danger={confirm?.kind === "cancel"}
+        askReason={confirm?.kind === "cancel"}
+        onConfirm={async (reason) => {
+          if (confirm.kind === "done") await doDelivered(confirm.row);
+          else {
+            if (!String(reason || "").trim())
+              throw new Error("សូមបញ្ចូលមូលហេតុ");
+            await doCancel(confirm.row, reason.trim());
+          }
+        }}
+        onClose={() => setConfirm(null)}
+      />
+    </div>
+  );
+}
+
 function AdminApp() {
   return (
     <PackageTrackingProvider>
@@ -32150,6 +33996,7 @@ function AdminApp() {
           <Route path="/process-tracking" element={<ProcessTrackingPage />} />
           <Route path="/exceptions" element={<ExceptionCenterPage />} />
           <Route path="/wh-arrived" element={<WHArrivedPage />} />
+          <Route path="/delivery" element={<DeliveryPage />} />
           <Route path="/sorting" element={<SortingPage />} />
           <Route path="/warehouses" element={<WarehouseManagementPage />} />
           <Route path="/kh-warehouse" element={<KhWarehousePage />} />
@@ -32177,6 +34024,9 @@ function AdminApp() {
                 "/roles",
                 "/settings",
                 "/wallet-top-up",
+                "/delivery",
+                "/shipments", // module removed — Container is the only grouping
+                "/arrival", // hidden — Containers › Arrived Destination confirms arrival
               ].includes(item.path),
           ).map((item) => {
             const config = MODULES[item.path];
