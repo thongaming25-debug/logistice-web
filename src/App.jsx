@@ -15033,7 +15033,7 @@ function Dashboard() {
       <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
           <h1 className="font-display font-extrabold text-xl text-ink-900 cb-page-title">
-            Welcome back{who ? `, ${who}` : ""} 👋
+            Welcome back{who ? `, ${who}` : ""}
           </h1>
           <p className="text-sm text-ink-600/55 mt-0.5">
             Here’s what’s happening with your logistics today.
@@ -25419,7 +25419,7 @@ const CustomerApp = (() => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold">
-                {tr(`Hello ${me.name} 👋`, `សួស្តី ${me.name} 👋`)}
+                {tr(`Hello ${me.name} `, `សួស្តី ${me.name} `)}
               </h1>
               <p className="text-blue-100 text-sm">
                 {tr("Welcome to Brathna", "សូមស្វាគមន៍មកកាន់ Brathna")}
