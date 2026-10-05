@@ -9367,33 +9367,33 @@ function StatCard({ icon, label, value, unit, tone = "ink", delta }) {
   const Icon = Icons[icon] || Icons.Circle;
   return (
     <div className="cb-surface cb-card cb-stat p-4 shadow-panel">
-      <div className="flex items-start justify-between">
+      <div className="flex items-center gap-3">
         <div
-          className={`w-9 h-9 rounded-sm flex items-center justify-center ${TONES[tone]}`}
+          className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ring-4 ring-white shadow-sm ${TONES[tone]}`}
         >
           <Icon size={18} strokeWidth={2.25} />
         </div>
+        <div className="text-[13px] font-medium text-ink-600/70 leading-tight">
+          {label}
+        </div>
+      </div>
+      <div className="mt-3 flex items-baseline gap-1.5">
+        <span className="font-display text-[28px] leading-none font-extrabold text-ink-900 tabular-nums">
+          {value}
+        </span>
+        {unit && (
+          <span className="text-xs text-ink-600/50 font-medium">{unit}</span>
+        )}
         {delta && (
           <span
-            className={`text-[11px] font-medium px-1.5 py-0.5 rounded-sm ${
-              delta.startsWith("-")
-                ? "bg-signal-red/10 text-signal-red"
-                : "bg-signal-teal/10 text-signal-teal"
+            className={`ml-auto text-[11px] font-semibold ${
+              delta.startsWith("-") ? "text-signal-red" : "text-signal-teal"
             }`}
           >
             {delta}
           </span>
         )}
       </div>
-      <div className="mt-3 flex items-baseline gap-1">
-        <span className="font-display text-2xl font-extrabold text-ink-900 tabular-nums">
-          {value}
-        </span>
-        {unit && (
-          <span className="text-xs text-ink-600/50 font-medium">{unit}</span>
-        )}
-      </div>
-      <div className="text-sm text-ink-600/60 mt-0.5">{label}</div>
     </div>
   );
 }
@@ -9417,75 +9417,204 @@ const STATE_STYLE = {
   pending: "bg-white border-mist-200 text-ink-600/40",
 };
 
+// Colour per pipeline step (soft background + strong foreground).
+const PIPE_TONES = [
+  { bg: "#DBEAFE", fg: "#2563EB", solid: "#2563EB" }, // blue
+  { bg: "#CCFBF1", fg: "#0D9488", solid: "#0D9488" }, // teal
+  { bg: "#EDE9FE", fg: "#7C3AED", solid: "#7C3AED" }, // violet
+  { bg: "#FFEDD5", fg: "#EA580C", solid: "#F59E0B" }, // orange
+  { bg: "#D1FAE5", fg: "#059669", solid: "#10B981" }, // green
+  { bg: "#DBEAFE", fg: "#1E3A8A", solid: "#1E3A8A" }, // navy
+];
+
+function FlagCircle({ code }) {
+  if (code === "ID") {
+    return (
+      <svg
+        width="30"
+        height="30"
+        viewBox="0 0 30 30"
+        className="rounded-full shrink-0 border border-mist-200"
+      >
+        <defs>
+          <clipPath id="cbFlagId">
+            <circle cx="15" cy="15" r="15" />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#cbFlagId)">
+          <rect width="30" height="15" fill="#E11D2E" />
+          <rect y="15" width="30" height="15" fill="#fff" />
+        </g>
+      </svg>
+    );
+  }
+  return (
+    <svg
+      width="30"
+      height="30"
+      viewBox="0 0 30 30"
+      className="rounded-full shrink-0"
+    >
+      <circle cx="15" cy="15" r="15" fill="#DE2910" />
+      <polygon
+        points="9,6 10.2,9.4 13.8,9.4 10.9,11.5 12,14.9 9,12.8 6,14.9 7.1,11.5 4.2,9.4 7.8,9.4"
+        fill="#FFDE00"
+      />
+    </svg>
+  );
+}
+
+// Light, clean pipeline card: tinted header + numbered steps with an icon
+// circle and the live count under each label.
+function PipelineCard({
+  flag,
+  title,
+  subtitle,
+  headerBg,
+  chipBg,
+  chipFg,
+  chip,
+  onChip,
+  extra,
+  steps,
+  activeIndex,
+  ready = true,
+}) {
+  return (
+    <div className="bg-white border border-mist-200 rounded-2xl shadow-panel overflow-hidden">
+      <div
+        className="flex items-center justify-between gap-3 flex-wrap px-5 py-3.5"
+        style={{ background: headerBg }}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <FlagCircle code={flag} />
+          <div className="min-w-0">
+            <div className="font-display font-bold text-[15px] text-ink-900 truncate">
+              {title}
+            </div>
+            <div className="text-xs text-ink-600/55 truncate">{subtitle}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          {extra}
+          {chip && (
+            <button
+              type="button"
+              onClick={onChip}
+              className="px-2.5 py-1 rounded-full font-medium"
+              style={{ background: chipBg, color: chipFg }}
+            >
+              {chip} ›
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="px-5 py-5 overflow-x-auto">
+        <div className="flex items-start min-w-[720px]">
+          {steps.map((st, i) => {
+            const tone = PIPE_TONES[i % PIPE_TONES.length];
+            const Ico = Icons[st.icon] || Icons.Circle;
+            const isActive = i === activeIndex;
+            return (
+              <div
+                key={st.label}
+                className="flex-1 min-w-0 last:flex-none last:w-28"
+              >
+                <div className="flex items-center">
+                  <span
+                    className="text-[11px] font-bold w-6 h-6 rounded-full flex items-center justify-center shrink-0"
+                    style={{ background: tone.bg, color: tone.fg }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span
+                    className="w-9 h-9 -ml-1 rounded-full flex items-center justify-center shrink-0 text-white transition-shadow"
+                    style={{
+                      background: tone.solid,
+                      boxShadow: isActive
+                        ? `0 0 0 4px ${tone.bg}`
+                        : "0 0 0 3px #fff",
+                    }}
+                  >
+                    <Ico size={17} strokeWidth={2.2} />
+                  </span>
+                  {i < steps.length - 1 && (
+                    <span
+                      className="h-0.5 flex-1 mx-2 rounded-full"
+                      style={{
+                        background:
+                          "linear-gradient(90deg," + tone.bg + ",#E5EAF2)",
+                      }}
+                    />
+                  )}
+                </div>
+                <div className="mt-2.5 pl-1 pr-2">
+                  <div className="text-[13px] font-medium text-ink-800 leading-tight">
+                    {st.label}
+                  </div>
+                  <div
+                    className="text-[15px] font-bold tabular-nums mt-0.5"
+                    style={{ color: tone.fg }}
+                  >
+                    {ready ? st.count : "–"}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const CHINA_STAGE_ICONS = {
+  "Inbound Origin": "Factory",
+  "Outbound Origin": "Ship",
+  "Arrived Destination": "Plane",
+  "Shipping To Branch": "Truck",
+  "Inbound Warehouse": "Warehouse",
+  Completed: "CircleCheck",
+};
+
 function RouteFlow() {
+  const navigate = useNavigate();
   const { packages } = usePackageTracking();
-  const stages = PACKAGE_STAGES.filter((label) => label !== "Completed");
+  const stages = PACKAGE_STAGES;
 
   const counts = stages.reduce((acc, label) => {
     acc[label] = packages.filter((p) => p.status === label).length;
     return acc;
   }, {});
 
-  // The stage the banner calls out as "active" is the furthest-along
-  // stage that currently has any live packages sitting in it.
+  // "Active" = furthest-along in-progress stage that has live packages.
+  const inProgress = stages.filter((l) => l !== "Completed");
   let activeIndex = 0;
-  for (let i = stages.length - 1; i >= 0; i--) {
-    if (counts[stages[i]] > 0) {
+  for (let i = inProgress.length - 1; i >= 0; i--) {
+    if (counts[inProgress[i]] > 0) {
       activeIndex = i;
       break;
     }
   }
-  const activeLabel = stages[activeIndex];
-  const activeCount = counts[activeLabel];
 
   return (
-    <div className="cb-route p-5 lg:p-6 overflow-x-auto">
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <div className="text-white font-display font-bold text-base">
-            China → Cambodia Pipeline · Land / Sea
-          </div>
-          <div className="text-mist-100/45 text-xs mt-0.5">
-            Current cross-border shipment status
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-signal-blue bg-signal-blue/15 px-2.5 py-1 rounded-sm">
-          <span className="w-1.5 h-1.5 rounded-full bg-signal-blue animate-pulse" />
-          {activeLabel} — {activeCount} active
-        </div>
-      </div>
-
-      <div className="flex items-center min-w-[720px]">
-        {stages.map((label, i) => {
-          const state =
-            i < activeIndex ? "done" : i === activeIndex ? "active" : "pending";
-          return (
-            <div
-              key={label}
-              className="flex items-center flex-1 last:flex-none"
-            >
-              <div className="flex flex-col items-center gap-2 w-24 shrink-0">
-                <div
-                  className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold tabular-nums ${STATE_STYLE[state]}`}
-                >
-                  {counts[label]}
-                </div>
-                <span className="text-[11px] text-center leading-tight text-mist-100/70">
-                  {label}
-                </span>
-              </div>
-              {i < stages.length - 1 && (
-                <div
-                  className={`h-0.5 flex-1 rounded-full ${
-                    state === "done" ? "bg-signal-teal" : "bg-white/10"
-                  }`}
-                />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <PipelineCard
+      flag="CN"
+      title="China → Cambodia Pipeline"
+      subtitle="Current process for your shipments (TKs) · Land / Sea"
+      headerBg="#EEF4FF"
+      chipBg="#DBEAFE"
+      chipFg="#1D4ED8"
+      chip={`Total TKs: ${packages.length}`}
+      onChip={() => navigate("/packages")}
+      activeIndex={activeIndex}
+      steps={stages.map((label) => ({
+        label: label === "Completed" ? "Complete / Delivered" : label,
+        count: counts[label],
+        icon: CHINA_STAGE_ICONS[label],
+      }))}
+    />
   );
 }
 
@@ -14168,6 +14297,14 @@ function useAirDashboardRows() {
   return { rows, ready, reload: load };
 }
 
+const AIR_STAGE_ICONS = {
+  "Order Processing": "ClipboardList",
+  "In Transit": "Plane",
+  "Received at Indonesia Warehouse": "PackageCheck",
+  "Departed Indonesia Warehouse": "PlaneTakeoff",
+  "Received at Cambodia Warehouse": "Warehouse",
+};
+
 function AirDashboardSection() {
   const navigate = useNavigate();
   const { rows, ready } = useAirDashboardRows();
@@ -14239,65 +14376,33 @@ function AirDashboardSection() {
 
   return (
     <div className="space-y-4">
-      <div className="cb-route p-5 lg:p-6 overflow-x-auto">
-        <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
-          <div>
-            <div className="text-white font-display font-bold text-base flex items-center gap-2">
-              <Icons.Plane size={17} /> Indonesia → Cambodia AIR Pipeline
-            </div>
-            <div className="text-mist-100/45 text-xs mt-0.5">
-              Independent AIR shipment lifecycle
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2.5 py-1 rounded-sm bg-signal-teal/15 text-signal-teal font-medium">
+      <PipelineCard
+        flag="ID"
+        title="Indonesia → Cambodia AIR Pipeline"
+        subtitle="Independent AIR shipment lifecycle"
+        headerBg="#ECFDF5"
+        chipBg="#D1FAE5"
+        chipFg="#047857"
+        chip="View AIR"
+        onChip={() => navigate("/air-shipments")}
+        ready={ready}
+        activeIndex={activeIndex}
+        extra={
+          <>
+            <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 font-medium">
               Complete Order — {completed}
             </span>
-            <span className="px-2.5 py-1 rounded-sm bg-signal-red/15 text-red-300 font-medium">
+            <span className="px-2.5 py-1 rounded-full bg-red-100 text-red-600 font-medium">
               Refund — {refunded}
             </span>
-            <button
-              type="button"
-              onClick={() => navigate("/air-shipments")}
-              className="px-2.5 py-1 rounded-sm bg-white/10 text-white hover:bg-white/15 font-medium"
-            >
-              View AIR
-            </button>
-          </div>
-        </div>
-        <div className="flex items-center min-w-[720px]">
-          {stages.map((label, i) => {
-            const state =
-              i < activeIndex
-                ? "done"
-                : i === activeIndex
-                  ? "active"
-                  : "pending";
-            return (
-              <div
-                key={label}
-                className="flex items-center flex-1 last:flex-none"
-              >
-                <div className="flex flex-col items-center gap-2 w-28 shrink-0">
-                  <div
-                    className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold tabular-nums ${STATE_STYLE[state]}`}
-                  >
-                    {ready ? counts[label] : "–"}
-                  </div>
-                  <span className="text-[11px] text-center leading-tight text-mist-100/70">
-                    {stageShort[label]}
-                  </span>
-                </div>
-                {i < stages.length - 1 && (
-                  <div
-                    className={`h-0.5 flex-1 rounded-full ${state === "done" ? "bg-signal-teal" : "bg-white/10"}`}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+          </>
+        }
+        steps={stages.map((label) => ({
+          label: stageShort[label],
+          count: counts[label],
+          icon: AIR_STAGE_ICONS[label],
+        }))}
+      />
 
       {ready ? (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 cb-fade-in">
@@ -14312,55 +14417,109 @@ function AirDashboardSection() {
         />
       )}
 
-      <div className="bg-white border border-mist-200 rounded-md shadow-panel">
-        <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
-          <h2 className="font-display font-bold text-sm text-ink-900">
-            Recent AIR Activity
-          </h2>
-          <button
-            onClick={() => navigate("/air-shipments")}
-            className="text-xs font-medium text-signal-blue hover:underline"
-          >
-            View all
-          </button>
-        </div>
+      <DashPanel
+        icon="Clock"
+        title="Recent AIR Activity"
+        action="View All"
+        onAction={() => navigate("/air-shipments")}
+      >
         {!ready ? (
           <SkeletonListRows rows={3} />
         ) : recent.length === 0 ? (
-          <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
+          <p className="text-sm text-ink-600/45 px-5 py-6 text-center">
             No AIR orders yet.
           </p>
         ) : (
-          <div className="divide-y divide-mist-100 cb-fade-in">
-            {recent.map((r) => (
-              <div
-                key={r.id || r.order_id}
-                className="flex items-center gap-3 px-4 lg:px-5 py-3"
-              >
-                <span className="w-2 h-2 rounded-full shrink-0 bg-violet-500" />
-                <div className="min-w-0 flex-1">
-                  <Link
-                    to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
-                    className="text-sm font-medium text-ink-900 hover:text-signal-blue truncate block"
-                  >
-                    {r.order_id}
-                  </Link>
-                  <div className="text-xs text-ink-600/55 truncate">
-                    {r.customer || "—"}
-                    {r.shop_name ? ` · ${r.shop_name}` : ""}
-                  </div>
-                </div>
-                <div className="hidden sm:block">
-                  <AirStatusBadge status={r.status} />
-                </div>
-                <div className="text-xs text-ink-600/40 shrink-0 w-16 text-right">
-                  {timeAgoLabel(r.updated_at || r.created_at)}
-                </div>
-              </div>
-            ))}
+          <div className="px-3 pb-3 overflow-x-auto cb-fade-in">
+            <table className="w-full text-left min-w-[520px]">
+              <thead>
+                <tr className="text-[11px] uppercase tracking-wide text-ink-600/45">
+                  <th className="font-semibold px-2 py-2">Time</th>
+                  <th className="font-semibold px-2 py-2">Order ID</th>
+                  <th className="font-semibold px-2 py-2">Customer</th>
+                  <th className="font-semibold px-2 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-mist-100">
+                {recent.map((r) => (
+                  <tr key={r.id || r.order_id} className="cb-table-row">
+                    <td className="px-2 py-3 text-xs text-ink-600/55 whitespace-nowrap">
+                      {timeAgoLabel(r.updated_at || r.created_at)}
+                    </td>
+                    <td className="px-2 py-3">
+                      <Link
+                        to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+                        className="text-sm font-semibold text-ink-900 hover:text-signal-blue"
+                      >
+                        {r.order_id}
+                      </Link>
+                    </td>
+                    <td className="px-2 py-3 text-xs text-ink-700 max-w-[240px] truncate">
+                      {r.customer || "—"}
+                      {r.shop_name ? ` · ${r.shop_name}` : ""}
+                    </td>
+                    <td className="px-2 py-3">
+                      <AirStatusBadge status={r.status} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
+      </DashPanel>
+    </div>
+  );
+}
+
+// Soft status pill used by the Dashboard activity lists.
+function ActivityPill({ children, tone = "ink" }) {
+  const map = {
+    blue: "bg-blue-50 text-blue-700",
+    teal: "bg-teal-50 text-teal-700",
+    red: "bg-red-50 text-red-600",
+    amber: "bg-amber-50 text-amber-700",
+    violet: "bg-violet-50 text-violet-700",
+    ink: "bg-slate-100 text-slate-700",
+  };
+  return (
+    <span
+      className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold whitespace-nowrap ${map[tone] || map.ink}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+function DashPanel({
+  icon,
+  title,
+  action,
+  onAction,
+  children,
+  className = "",
+}) {
+  const Ico = Icons[icon] || Icons.Circle;
+  return (
+    <div
+      className={`bg-white border border-mist-200 rounded-2xl shadow-panel overflow-hidden ${className}`}
+    >
+      <div className="flex items-center justify-between px-5 py-4">
+        <h2 className="font-display font-bold text-[15px] text-ink-900 flex items-center gap-2.5">
+          <Ico size={17} className="text-ink-700" />
+          {title}
+        </h2>
+        {action && (
+          <button
+            type="button"
+            onClick={onAction}
+            className="text-xs font-semibold text-signal-blue hover:underline"
+          >
+            {action} →
+          </button>
+        )}
       </div>
+      {children}
     </div>
   );
 }
@@ -14429,8 +14588,31 @@ function Dashboard() {
 
   const exceptions = packages.filter((p) => p.exception);
 
+  const who =
+    user?.name || user?.full_name || user?.fullName || user?.username || "";
+  const dateLabel = today.toLocaleDateString("en-GB", {
+    weekday: "long",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+
   return (
     <div className="space-y-5">
+      <div className="flex items-end justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="font-display font-extrabold text-xl text-ink-900 cb-page-title">
+            Welcome back{who ? `, ${who}` : ""} 👋
+          </h1>
+          <p className="text-sm text-ink-600/55 mt-0.5">
+            Here’s what’s happening with your logistics today.
+          </p>
+        </div>
+        <div className="text-xs font-medium text-ink-700 bg-white border border-mist-200 rounded-xl px-3 py-2 shadow-panel">
+          {dateLabel}
+        </div>
+      </div>
+
       {!showChina && !showAir && (
         <div className="cb-surface p-8 text-center">
           <Icons.LayoutDashboard
@@ -14469,101 +14651,113 @@ function Dashboard() {
 
       {showChina && (
         <div className="grid lg:grid-cols-3 gap-5">
-          <div className="lg:col-span-2 bg-white border border-mist-200 rounded-md shadow-panel">
-            <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
-              <h2 className="font-display font-bold text-sm text-ink-900">
-                Recent Activity
-              </h2>
-              <button
-                onClick={() => navigate("/packages")}
-                className="text-xs font-medium text-signal-blue hover:underline"
-              >
-                View all
-              </button>
-            </div>
+          <DashPanel
+            icon="Clock"
+            title="Recent Activity"
+            action="View All"
+            onAction={() => navigate("/packages")}
+            className="lg:col-span-2"
+          >
             {!dashReady ? (
               <SkeletonListRows rows={5} />
             ) : recent.length === 0 ? (
-              <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
+              <p className="text-sm text-ink-600/45 px-5 py-6 text-center">
                 No recent activity yet.
               </p>
             ) : (
-              <div className="divide-y divide-mist-100 cb-fade-in">
-                {recent.map((p) => (
-                  <div
-                    key={p.tk}
-                    className="flex items-center gap-3 px-4 lg:px-5 py-3"
-                  >
-                    <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${DOT[statusTone(p)]}`}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <Link
-                        to={`/packages/${p.tk}`}
-                        className="text-sm font-medium text-ink-900 hover:text-signal-blue truncate block"
-                      >
-                        {p.tk}
-                      </Link>
-                      <div className="text-xs text-ink-600/55 truncate">
-                        {packageCustomerLabel(p)}
-                      </div>
-                    </div>
-                    <div className="text-xs text-ink-700 font-medium hidden sm:block">
-                      {p.status || "—"}
-                    </div>
-                    <div className="text-xs text-ink-600/40 shrink-0 w-16 text-right">
-                      {timeAgoLabel(lastActivityAt(p))}
-                    </div>
-                  </div>
-                ))}
+              <div className="px-3 pb-3 overflow-x-auto cb-fade-in">
+                <table className="w-full text-left min-w-[520px]">
+                  <thead>
+                    <tr className="text-[11px] uppercase tracking-wide text-ink-600/45">
+                      <th className="font-semibold px-2 py-2">Time</th>
+                      <th className="font-semibold px-2 py-2">Tracking</th>
+                      <th className="font-semibold px-2 py-2">Customer</th>
+                      <th className="font-semibold px-2 py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-mist-100">
+                    {recent.map((p) => (
+                      <tr key={p.tk} className="cb-table-row">
+                        <td className="px-2 py-3 text-xs text-ink-600/55 whitespace-nowrap">
+                          {timeAgoLabel(lastActivityAt(p))}
+                        </td>
+                        <td className="px-2 py-3">
+                          <Link
+                            to={`/packages/${p.tk}`}
+                            className="text-sm font-semibold text-ink-900 hover:text-signal-blue"
+                          >
+                            {p.tk}
+                          </Link>
+                        </td>
+                        <td className="px-2 py-3 text-xs text-ink-700 max-w-[220px] truncate">
+                          {packageCustomerLabel(p)}
+                        </td>
+                        <td className="px-2 py-3">
+                          <ActivityPill
+                            tone={
+                              p.exception
+                                ? "red"
+                                : p.status === "Completed"
+                                  ? "teal"
+                                  : p.status === "Inbound Origin"
+                                    ? "blue"
+                                    : IN_TRANSIT_STATUSES.includes(p.status)
+                                      ? "amber"
+                                      : "violet"
+                            }
+                          >
+                            {p.status || "—"}
+                          </ActivityPill>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
-          </div>
+          </DashPanel>
 
-          <div className="cb-surface cb-card">
-            <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
-              <h2 className="font-display font-bold text-sm text-ink-900">
-                Exception Alerts
-              </h2>
-              <TriangleAlert size={16} className="text-signal-red" />
-            </div>
+          <DashPanel
+            icon="TriangleAlert"
+            title="Exception Alerts"
+            action="Open Center"
+            onAction={() => navigate("/exceptions")}
+          >
             {!dashReady ? (
               <SkeletonListRows rows={3} />
             ) : exceptions.length === 0 ? (
-              <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
-                No open exceptions.
-              </p>
+              <div className="px-5 pb-7 pt-2 text-center cb-fade-in">
+                <div className="mx-auto w-11 h-11 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                  <Icons.CircleCheck size={22} />
+                </div>
+                <p className="text-sm text-ink-600/55 mt-2.5">
+                  No open exceptions.
+                </p>
+              </div>
             ) : (
-              <div className="divide-y divide-mist-100 cb-fade-in">
+              <div className="px-3 pb-3 space-y-2 cb-fade-in">
                 {exceptions.map((p) => (
-                  <div key={p.tk} className="px-4 lg:px-5 py-3">
-                    <div className="flex items-center justify-between">
+                  <div
+                    key={p.tk}
+                    className="rounded-xl border border-red-100 bg-red-50/40 px-3.5 py-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
                       <Link
                         to={`/packages/${p.tk}`}
-                        className="text-sm font-medium text-ink-900 hover:text-signal-blue"
+                        className="text-sm font-semibold text-ink-900 hover:text-signal-blue"
                       >
                         {p.tk}
                       </Link>
-                      <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-sm bg-signal-red/10 text-signal-red">
-                        {p.exception.type}
-                      </span>
+                      <ActivityPill tone="red">{p.exception.type}</ActivityPill>
                     </div>
-                    <div className="text-xs text-ink-600/55 mt-0.5">
+                    <div className="text-xs text-ink-600/60 mt-1">
                       {p.exception.detail || packageCustomerLabel(p)}
                     </div>
                   </div>
                 ))}
               </div>
             )}
-            <div className="px-4 lg:px-5 py-3 border-t border-mist-200">
-              <button
-                onClick={() => navigate("/exceptions")}
-                className="w-full text-xs font-medium text-center text-signal-blue hover:underline"
-              >
-                Open Exception Center
-              </button>
-            </div>
-          </div>
+          </DashPanel>
         </div>
       )}
     </div>
