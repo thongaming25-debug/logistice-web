@@ -25385,7 +25385,7 @@ const CustomerApp = (() => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold">
-                {tr(`Hello ${me.name} 👋`, `សួស្តី ${me.name} 👋`)}
+                {tr(`Hello ${me.name} `, `សួស្តី ${me.name} `)}
               </h1>
               <p className="text-blue-100 text-sm">
                 {tr("Welcome to Brathna", "សូមស្វាគមន៍មកកាន់ Brathna")}
