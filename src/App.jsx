@@ -819,6 +819,11 @@ const NAV_SECTIONS = [
         path: "/customer-transfer",
       },
       {
+        label: "Deleted Accounts",
+        icon: "UserX",
+        path: "/deleted-accounts",
+      },
+      {
         label: "Customer Features",
         icon: "ToggleRight",
         path: "/customer-features",
@@ -1093,6 +1098,7 @@ const PATH_VIEW = {
   "/customer-accounts": "customer_account.view",
   "/customer-addresses": "customer_address.view",
   "/customer-transfer": "customer_transfer.view",
+  "/deleted-accounts": "customer.view",
   "/orders": "order.view",
   "/air-shipments": "air_order.view",
   "/warehouses": "warehouse.view",
@@ -9686,6 +9692,7 @@ const ADMIN_KM = {
   "Customer Addresses": "អាសយដ្ឋានអតិថិជន",
   "Customer ID Transfer": "ផ្ទេរលេខសម្គាល់អតិថិជន",
   "Customer Features": "មុខងារអតិថិជន",
+  "Deleted Accounts": "គណនីដែលបានលុប",
   Warehouse: "ឃ្លាំង",
   "Warehouse Management": "គ្រប់គ្រងឃ្លាំង",
   Locations: "ទីតាំង",
@@ -12606,7 +12613,7 @@ function CustomerResetPasswordModal({ row, onClose }) {
   );
 }
 
-function RowDeleteModal({ label, onConfirm, onClose }) {
+function RowDeleteModal({ label, notice, onConfirm, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (!label) return null;
@@ -12628,6 +12635,11 @@ function RowDeleteModal({ label, onConfirm, onClose }) {
             Are you sure you want to permanently delete <b>{label}</b>{" "}
             ជាអចិន្ត្រៃយ៍មែនទេ? This action cannot be undone.
           </p>
+          {notice && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              {notice}
+            </p>
+          )}
           {error && <p className="text-xs text-signal-red">{error}</p>}
         </div>
         <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-mist-200">
@@ -13031,6 +13043,43 @@ function ListPage({
   const [editingRow, setEditingRow] = useState(null);
   const [deletingRow, setDeletingRow] = useState(null);
   const [resetPwRow, setResetPwRow] = useState(null);
+  // Customers only: how many Orders (TK + AIR) lose their owner if this
+  // Customer is deleted (the DB trigger keeps them as "Deleted account").
+  const [deletingOrderCount, setDeletingOrderCount] = useState(null);
+  useEffect(() => {
+    setDeletingOrderCount(null);
+    if (path !== "/customers" || !deletingRow || !supabase) return;
+    let alive = true;
+    (async () => {
+      try {
+        const { data: cust } = await supabase
+          .from("customers")
+          .select("id")
+          .eq("customer_code", deletingRow.id)
+          .maybeSingle();
+        if (!cust?.id) return;
+        // Same sources as the Customer Detail header: Total TK (China)
+        // = packages, AIR Orders (Indonesia) = air_orders.
+        const countOf = async (table) => {
+          const { count, error } = await supabase
+            .from(table)
+            .select("id", { count: "exact", head: true })
+            .eq("customer_id", cust.id);
+          return error ? 0 : (count ?? 0);
+        };
+        const [tk, air] = await Promise.all([
+          countOf("packages"),
+          countOf("air_orders"),
+        ]);
+        if (alive) setDeletingOrderCount({ tk, air, total: tk + air });
+      } catch {
+        /* the notice is optional - never block the delete dialog */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [path, deletingRow]);
   const canResetPassword =
     path === "/customers" && hasPermission(user, "customer.reset_password");
   const isUsersModule = path === "/users";
@@ -13509,6 +13558,11 @@ function ListPage({
               isLinkedTk
                 ? deletingRow.tk
                 : String(deletingRow.id ?? deletingRow.name ?? "")
+            }
+            notice={
+              path === "/customers" && deletingOrderCount?.total > 0
+                ? `Order សរុប ${deletingOrderCount.total} (China ${deletingOrderCount.tk} · Indo ${deletingOrderCount.air}) នឹងនៅដដែល ប៉ុន្តែគ្មានម្ចាស់ទៀតទេ ព្រោះគណនីត្រូវបានលុប។ (These orders are kept without an owner because the account is deleted.)`
+                : null
             }
             onConfirm={async () => {
               if (!canDeleteRows) throw new Error(NO_PERM_MSG);
@@ -30648,6 +30702,167 @@ function AirRefundModal({ open, row, onClose, onSaved }) {
   );
 }
 
+function AirTransferModal({ open, row, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [transferType, setTransferType] = useState("uid");
+  const [query, setQuery] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const { matched, loading } = useCustomerLookup(transferType, query);
+  useEffect(() => {
+    if (open) {
+      setTransferType("uid");
+      setQuery("");
+      setReason("");
+      setBusy(false);
+      setError("");
+    }
+  }, [open]);
+  if (!open || !row) return null;
+  const toLabel = matched ? `${matched.id} · ${matched.name}` : null;
+  const same = Boolean(
+    matched &&
+    ((row.customer_id && matched.uuid && row.customer_id === matched.uuid) ||
+      toLabel === row.customer),
+  );
+  const canSubmit = Boolean(matched && !same && !loading && !busy);
+  async function submit(e) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setBusy(true);
+    setError("");
+    try {
+      const by = user?.name || user?.email || "Admin";
+      const patch = {
+        customer: toLabel,
+        updated_at: new Date().toISOString(),
+        updated_by: by,
+      };
+      if (matched.uuid) patch.customer_id = matched.uuid;
+      let saved;
+      if (supabase && !String(row.id).startsWith("air-local-")) {
+        const { data, error: updErr } = await supabase
+          .from("air_orders")
+          .update(patch)
+          .eq("id", row.id)
+          .select("*")
+          .single();
+        if (updErr) throw updErr;
+        saved = normalizeAirRow(data);
+        // Audit trail in the same table the China (TK) transfers use.
+        // Never block the transfer if the log insert is refused.
+        try {
+          await supabase.from("customer_transfer").insert({
+            tk: row.order_id,
+            from: row.customer || null,
+            to: toLabel,
+            reason: `[AIR] ${reason.trim()}`.trim(),
+            approvedBy: by,
+            status: "Resolved",
+          });
+        } catch {
+          /* log is best-effort */
+        }
+      } else {
+        saved = { ...row, ...patch };
+        airOrderLocalWrite(
+          airOrderLocalRows().map((x) => (x.id === row.id ? saved : x)),
+        );
+      }
+      emitCBToast(
+        "ok",
+        "AIR Order transferred",
+        `${row.order_id} → ${toLabel}`,
+      );
+      onSaved(saved);
+    } catch (err) {
+      setError(err.message || "Unable to transfer AIR Order.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={submit}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md max-h-[85vh] overflow-y-auto rounded-2xl bg-white shadow-2xl"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-lg">Transfer AIR Order</h3>
+            <p className="text-xs text-slate-500 mt-1">{row.order_id}</p>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-3.5">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+              From
+            </div>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-800">
+              {row.customer || "—"}
+            </div>
+          </div>
+          <TransferAccountLookup
+            transferType={transferType}
+            onTransferTypeChange={(t) => {
+              setTransferType(t);
+              setQuery("");
+            }}
+            query={query}
+            onQueryChange={setQuery}
+            matched={matched}
+            loading={loading}
+            noteText="This transfer takes effect immediately — the AIR Order will be removed from the original customer and appear under the new customer."
+          />
+          {matched && same && (
+            <p className="text-xs text-red-600">
+              This is already the same customer — please choose a different
+              customer.
+            </p>
+          )}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+              Reason
+            </label>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className={INPUT_CLS}
+            />
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!canSubmit}
+            className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {busy ? "Transferring…" : "Confirm"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 function AirHistoryModal({ row, onClose }) {
   const [history, setHistory] = useState([]);
   useEffect(() => {
@@ -31011,10 +31226,13 @@ function AirShipmentDetailPage() {
   const [loading, setLoading] = useState(true);
   const canProcess = hasPermission(user, "air_order.process"),
     canRefund = hasPermission(user, "air_order.refund"),
-    canDelete = hasPermission(user, "air_order.delete");
+    canDelete = hasPermission(user, "air_order.delete"),
+    canTransfer = hasPermission(user, "air_order.edit");
   const [updateOpen, setUpdateOpen] = useState(false);
   const [refundOpen, setRefundOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -31143,16 +31361,57 @@ function AirShipmentDetailPage() {
                 Refund Order
               </button>
             )}
-          {canDelete && (
-            <button
-              type="button"
-              onClick={handleDelete}
-              title="Delete AIR Order"
-              aria-label="Delete AIR Order"
-              className="h-10 w-10 rounded-xl border border-slate-200 bg-white text-slate-400 hover:text-red-600 hover:border-red-200 grid place-items-center"
-            >
-              <Icons.Trash2 size={16} />
-            </button>
+          {(canTransfer || canDelete) && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-semibold hover:bg-slate-50 inline-flex items-center gap-1.5"
+              >
+                Actions <Icons.ChevronDown size={15} />
+              </button>
+              {menuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30"
+                    onClick={() => setMenuOpen(false)}
+                  />
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-11 z-40 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
+                  >
+                    {canTransfer && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setTransferOpen(true);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Icons.ArrowLeftRight size={15} /> Transfer Order
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          handleDelete();
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50"
+                      >
+                        <Icons.Trash2 size={15} /> Delete Order
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -31200,6 +31459,17 @@ function AirShipmentDetailPage() {
       )}
       {historyOpen && (
         <AirHistoryModal row={row} onClose={() => setHistoryOpen(false)} />
+      )}
+      {transferOpen && (
+        <AirTransferModal
+          open
+          row={row}
+          onClose={() => setTransferOpen(false)}
+          onSaved={(r) => {
+            setRow(r);
+            setTransferOpen(false);
+          }}
+        />
       )}
       {refundOpen && (
         <AirRefundModal
@@ -31293,6 +31563,17 @@ const SLA_DEFAULT_WAREHOUSE = [
     sortOrder: 2,
     location: "Cambodia Warehouse",
     allowedDays: 1,
+    warningDays: 1,
+    lateDays: 2,
+    active: true,
+  },
+  // AIR (Indonesia → Cambodia): how long an order may sit at the Indonesia
+  // warehouse without an update. Separate from the China warehouse rule.
+  {
+    id: "indonesia",
+    sortOrder: 3,
+    location: "Indonesia Warehouse",
+    allowedDays: 2,
     warningDays: 1,
     lateDays: 2,
     active: true,
@@ -31535,17 +31816,32 @@ function slaDiff(cfg, prev, next) {
   return out;
 }
 
+// Rules saved before the Indonesia warehouse rule existed don't have it; add
+// the default so it shows up in Settings (it is saved on the first edit).
+function slaWithIndonesiaRule(cfg, rules) {
+  if (cfg !== SLA_KINDS.warehouse) return rules;
+  if (rules.some((r) => r.id === "indonesia")) return rules;
+  const d = SLA_DEFAULT_WAREHOUSE.find((x) => x.id === "indonesia");
+  return d ? [...rules, { ...d }] : rules;
+}
+
 async function slaLoadRules(cfg) {
   if (!supabase)
-    return lsRead(cfg.lsKey, null) || cfg.defaults.map((d) => ({ ...d }));
+    return slaWithIndonesiaRule(
+      cfg,
+      lsRead(cfg.lsKey, null) || cfg.defaults.map((d) => ({ ...d })),
+    );
   const { data, error } = await supabase
     .from(cfg.table)
     .select("*")
     .order("sort_order", { ascending: true });
   if (error) throw error;
-  return data && data.length
-    ? data.map((r) => slaFromRow(cfg, r))
-    : cfg.defaults.map((d) => ({ ...d }));
+  return slaWithIndonesiaRule(
+    cfg,
+    data && data.length
+      ? data.map((r) => slaFromRow(cfg, r))
+      : cfg.defaults.map((d) => ({ ...d })),
+  );
 }
 
 async function slaPersist(cfg, nextRules, changedRules, changes, user) {
@@ -32567,6 +32863,10 @@ function airSlaBuildInput(row, history) {
         ? at("Complete Order") || row.updated_at
         : null,
     lastUpdatedAt: last || row.updated_at || null,
+    airStatus: status,
+    indoReceivedAt:
+      at("Received at Indonesia Warehouse") ||
+      (status === "Received at Indonesia Warehouse" ? row.updated_at : null),
   };
 }
 
@@ -32634,10 +32934,58 @@ function useAirSlaRows() {
       .filter((o) => o.status !== AIR_ORDER_TERMINAL) // refunds are not SLA-tracked
       .map((o) => {
         const input = airSlaBuildInput(o, hist[o.id]);
-        return {
-          ...input,
-          sla: evaluateShipmentSla(input, transport, warehouse, now),
-        };
+        const sla = evaluateShipmentSla(input, transport, warehouse, now);
+        // Indonesia warehouse update SLA: while the order sits at "Received at
+        // Indonesia Warehouse", count days since the last update against the
+        // "Indonesia Warehouse" rule (Settings → Warehouse Update SLA).
+        if (
+          !sla.warehouse &&
+          input.airStatus === "Received at Indonesia Warehouse" &&
+          input.indoReceivedAt
+        ) {
+          const rule = (warehouse || []).find(
+            (r) => r.id === "indonesia" && r.active,
+          );
+          // evaluateWarehouseSla keys its rule by id "china" for the
+          // received-but-not-departed window; reuse it with the Indonesia rule.
+          const indoW = rule
+            ? evaluateWarehouseSla(
+                {
+                  receivedAt: input.indoReceivedAt,
+                  lastUpdatedAt: input.lastUpdatedAt,
+                },
+                [{ ...rule, id: "china" }],
+                now,
+              )
+            : null;
+          if (indoW) {
+            sla.warehouse = indoW;
+            const t = sla.transit?.status;
+            sla.overall =
+              t === SLA_STATUS.LATE
+                ? SLA_STATUS.LATE
+                : indoW.status === SLA_STATUS.NO_UPDATE
+                  ? SLA_STATUS.NO_UPDATE
+                  : t === SLA_STATUS.WARNING ||
+                      indoW.status === SLA_STATUS.WARNING
+                    ? SLA_STATUS.WARNING
+                    : SLA_STATUS.ON_TIME;
+          }
+        }
+        // Once the order has reached Cambodia the transit clock is finished:
+        // a late arrival no longer keeps the card on "Late" (same as the
+        // alert, which resolves on arrival). From then on only the Cambodia
+        // warehouse update SLA decides the status.
+        if (sla.transit?.finished && !input.completedAt) {
+          const w = sla.warehouse?.status;
+          sla.overall =
+            w === SLA_STATUS.NO_UPDATE
+              ? SLA_STATUS.NO_UPDATE
+              : w === SLA_STATUS.WARNING
+                ? SLA_STATUS.WARNING
+                : SLA_STATUS.ON_TIME;
+        }
+        return { ...input, sla };
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orders, hist, transport, warehouse, rulesLoading, tick]);
@@ -40360,6 +40708,212 @@ function DeliveryPage() {
   );
 }
 
+// ============================================================
+// pages/DeletedAccounts.jsx — Orders whose owner account was deleted.
+// The DB trigger `customers_before_delete` keeps every TK / AIR Order,
+// sets customer_id = null and customer = 'Deleted account'. Nothing else
+// about the old customer (name, phone, code) is kept.
+// ============================================================
+const DELETED_ACCOUNT_LABEL = "Deleted account";
+
+function DeletedAccountsPage() {
+  const { user } = useAuth();
+  const canViewAir = hasPermission(user, "air_order.view");
+  const [tab, setTab] = useState("packages");
+  const [state, setState] = useState({
+    loading: true,
+    packages: [],
+    air: [],
+    error: "",
+  });
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!supabase) {
+        setState({ loading: false, packages: [], air: [], error: "" });
+        return;
+      }
+      const load = (table) =>
+        supabase
+          .from(table)
+          .select("*")
+          .is("customer_id", null)
+          .eq("customer", DELETED_ACCOUNT_LABEL)
+          .order("created_at", { ascending: false })
+          .limit(2000);
+      const [p, a] = await Promise.all([
+        load("packages"),
+        canViewAir ? load("air_orders") : Promise.resolve({ data: [] }),
+      ]);
+      if (!alive) return;
+      setState({
+        loading: false,
+        packages: p.data || [],
+        air: (a.data || []).map(normalizeAirRow),
+        error: p.error?.message || a.error?.message || "",
+      });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [canViewAir]);
+
+  const { loading, packages, air, error } = state;
+
+  const dateCol = {
+    key: "updated",
+    label: "Last Update",
+    search: () => "",
+    render: (r) => (
+      <div>
+        <div className="font-semibold text-slate-800">
+          {cdDate(r.updated_at || r.created_at)}
+        </div>
+        <div className="text-[11px] text-slate-400">
+          {cdAgo(r.updated_at || r.created_at)}
+        </div>
+      </div>
+    ),
+  };
+  const pkgCols = [
+    dateCol,
+    {
+      key: "tk",
+      label: "Tracking Number",
+      render: (r) => (
+        <Link
+          to={`/packages/${encodeURIComponent(r.tk)}`}
+          className="font-semibold text-blue-700 hover:underline"
+        >
+          {r.tk}
+        </Link>
+      ),
+    },
+    {
+      key: "container_no",
+      label: "Container",
+      render: (r) => r.container_no || "—",
+    },
+    {
+      key: "route",
+      label: "Route",
+      search: (r) => `${r.origin_wh_code} ${r.dest_branch_code}`,
+      render: (r) =>
+        `${r.origin_wh_code || "—"} → ${r.dest_branch_code || "—"}`,
+    },
+    {
+      key: "fee",
+      label: "Shipping Fee",
+      search: () => "",
+      render: (r) => <ShippingFeeCell row={r} />,
+    },
+    {
+      key: "status",
+      label: "Status",
+      search: (r) => pkgDisplayStatus(r),
+      render: (r) => <StatusBadge label={pkgDisplayStatus(r) || "—"} />,
+    },
+  ];
+  const airCols = [
+    dateCol,
+    {
+      key: "order_id",
+      label: "Shop Order ID",
+      render: (r) => (
+        <Link
+          to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+          className="font-semibold text-blue-700 hover:underline"
+        >
+          {r.order_id}
+        </Link>
+      ),
+    },
+    { key: "tk", label: "Tracking Number", render: (r) => r.tk || "—" },
+    { key: "shop_name", label: "Shop", render: (r) => r.shop_name || "—" },
+    {
+      key: "product_name",
+      label: "Product",
+      render: (r) => r.product_name || "—",
+    },
+    {
+      key: "status",
+      label: "Status",
+      search: (r) => r.status,
+      render: (r) => <AirStatusBadge status={r.status} />,
+    },
+  ];
+  const tabs = [
+    ["packages", "Packages / TK (China)", packages.length],
+    ...(canViewAir ? [["air", "AIR · Indonesia", air.length]] : []),
+  ];
+
+  return (
+    <div className="mx-auto max-w-[1300px] space-y-5 p-5 md:p-7">
+      <div>
+        <h1 className="cb-page-title flex items-center gap-2 text-2xl font-bold text-slate-900">
+          <Icons.UserX size={24} className="text-slate-500" /> Deleted Accounts
+        </h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Orders whose customer account was deleted. They are kept for history
+          but have no owner.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <CdStat label="Total Orders" value={packages.length + air.length} />
+        <CdStat label="China (TK)" value={packages.length} />
+        {canViewAir && (
+          <CdStat
+            label="Indo (AIR)"
+            value={air.length}
+            tone="text-violet-700"
+          />
+        )}
+      </div>
+      {error && (
+        <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-600">
+          {error}
+        </p>
+      )}
+      <div className="space-y-3">
+        <div className="flex gap-1 border-b border-slate-200">
+          {tabs.map(([k, label, n]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setTab(k)}
+              className={`-mb-px inline-flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-bold transition ${tab === k ? "border-blue-600 text-blue-700" : "border-transparent text-slate-500 hover:text-slate-800"}`}
+            >
+              {label}
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] ${tab === k ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-500"}`}
+              >
+                {n}
+              </span>
+            </button>
+          ))}
+        </div>
+        {tab === "packages" && (
+          <CdTable
+            cols={pkgCols}
+            rows={packages}
+            loading={loading}
+            empty="No orders from deleted accounts."
+          />
+        )}
+        {tab === "air" && canViewAir && (
+          <CdTable
+            cols={airCols}
+            rows={air}
+            loading={loading}
+            empty="No AIR orders from deleted accounts."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AdminApp() {
   return (
     <AdminPrefsProvider>
@@ -40401,6 +40955,7 @@ function AdminApp() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/reports" element={<ReportsHubPage />} />
             <Route path="/customers/:code" element={<CustomerDetailPage />} />
+            <Route path="/deleted-accounts" element={<DeletedAccountsPage />} />
             <Route path="/wallet-top-up" element={<WalletTopUpPage />} />
             <Route path="/reports/:key" element={<ReportsPage />} />
             <Route path="/notifications" element={<NotificationCenterPage />} />
@@ -40420,6 +40975,7 @@ function AdminApp() {
                   "/containers",
                   "/roles",
                   "/customer-features",
+                  "/deleted-accounts", // custom page above
                   "/settings",
                   "/wallet-top-up",
                   "/delivery",
