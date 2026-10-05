@@ -1504,6 +1504,17 @@ function computeAllowedPaths(u) {
   if (hasPermission(u, "tk.view") && !paths.includes("/exceptions")) {
     paths.push("/exceptions");
   }
+
+  // Notification Center follows the Dashboard scopes: a role with
+  // Dashboard · China and/or Dashboard · AIR can open it (the list itself is
+  // filtered to the scopes the role has).
+  if (
+    (hasPermission(u, "dashboard.china") ||
+      hasPermission(u, "dashboard.air")) &&
+    !paths.includes("/notifications")
+  ) {
+    paths.push("/notifications");
+  }
   return paths;
 }
 
@@ -10608,6 +10619,7 @@ function Layout() {
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex-1 flex flex-col min-w-0">
         <SlaNotificationSync />
+        <SlaAirNotificationSync />
         <Topbar title={title} onMenuClick={() => setSidebarOpen(true)} />
         <main className="flex-1 overflow-y-auto p-4 lg:p-6 xl:p-7">
           <Outlet />
@@ -14307,6 +14319,8 @@ const AIR_STAGE_ICONS = {
 
 function AirDashboardSection() {
   const navigate = useNavigate();
+  const { user: authUser } = useAuth();
+  const canOpenAir = canOpenAirPages(authUser);
   const { rows, ready } = useAirDashboardRows();
   const stages = AIR_ORDER_STATUS_FLOW.filter((x) => x !== "Complete Order");
   const countOf = (label) =>
@@ -14383,7 +14397,7 @@ function AirDashboardSection() {
         headerBg="#ECFDF5"
         chipBg="#D1FAE5"
         chipFg="#047857"
-        chip="View AIR"
+        chip={canOpenAir ? "View AIR" : null}
         onChip={() => navigate("/air-shipments")}
         ready={ready}
         activeIndex={activeIndex}
@@ -14420,7 +14434,7 @@ function AirDashboardSection() {
       <DashPanel
         icon="Clock"
         title="Recent AIR Activity"
-        action="View All"
+        action={canOpenAir ? "View All" : null}
         onAction={() => navigate("/air-shipments")}
       >
         {!ready ? (
@@ -14447,12 +14461,18 @@ function AirDashboardSection() {
                       {timeAgoLabel(r.updated_at || r.created_at)}
                     </td>
                     <td className="px-2 py-3">
-                      <Link
-                        to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
-                        className="text-sm font-semibold text-ink-900 hover:text-signal-blue"
-                      >
-                        {r.order_id}
-                      </Link>
+                      {canOpenAir ? (
+                        <Link
+                          to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+                          className="text-sm font-semibold text-ink-900 hover:text-signal-blue"
+                        >
+                          {r.order_id}
+                        </Link>
+                      ) : (
+                        <span className="text-sm font-semibold text-ink-900">
+                          {r.order_id}
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-3 text-xs text-ink-700 max-w-[240px] truncate">
                       {r.customer || "—"}
@@ -14468,6 +14488,8 @@ function AirDashboardSection() {
           </div>
         )}
       </DashPanel>
+
+      <AirSlaSection />
     </div>
   );
 }
@@ -32276,7 +32298,8 @@ function SlaBadge({ status }) {
 
 function SlaDashboardSection() {
   const navigate = useNavigate();
-  const { items: alerts } = useSlaNotifications({ limit: 5 });
+  const { items: allAlerts } = useSlaNotifications({ limit: 40 });
+  const alerts = allAlerts.filter((n) => !slaNotifIsAir(n)).slice(0, 5);
   const { rows, loading } = useSlaRows();
   const [range, setRange] = useState("30d");
   const [from, setFrom] = useState("");
@@ -32499,6 +32522,282 @@ function SlaDashboardSection() {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- SLA for AIR orders (Indonesia → Cambodia) ----
+// Uses the same rules/engine as Land / Sea (rule "Air" in Transport SLA).
+// Stage times come from air_order_history:
+//   In Transit               → transit clock starts
+//   Received at Cambodia WH  → transit clock stops (Cambodia WH update SLA starts)
+//   Complete Order           → completed
+function airSlaBuildInput(row, history) {
+  const at = (label) => {
+    const h = (history || []).find(
+      (x) => canonicalAirStatus(x.status) === label,
+    );
+    return h?.created_at || null;
+  };
+  const last = (history || []).reduce(
+    (m, x) => (!m || new Date(x.created_at) > new Date(m) ? x.created_at : m),
+    null,
+  );
+  const status = canonicalAirStatus(row.status);
+  const inTransitAt =
+    at("In Transit") ||
+    (airStatusIndex(status) >= 1 ? row.updated_at || row.created_at : null);
+  const cambodiaAt =
+    at("Received at Cambodia Warehouse") ||
+    (status === "Received at Cambodia Warehouse" ? row.updated_at : null);
+  return {
+    id: row.id,
+    orderId: row.order_id,
+    tk: row.order_id ? `${SLA_AIR_PREFIX}${row.order_id}` : null,
+    label: `AIR ${row.order_id}`,
+    customer: row.customer,
+    mode: "Air",
+    createdAt: row.created_at,
+    receivedAt: null,
+    outboundAt: inTransitAt,
+    arrivedAt: cambodiaAt,
+    warehouseReceivedAt: cambodiaAt,
+    completedAt:
+      status === "Complete Order"
+        ? at("Complete Order") || row.updated_at
+        : null,
+    lastUpdatedAt: last || row.updated_at || null,
+  };
+}
+
+function useAirSlaRows() {
+  const { transport, warehouse, loading: rulesLoading } = useSlaRules();
+  const [orders, setOrders] = useState([]);
+  const [hist, setHist] = useState({});
+  const [ready, setReady] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((t) => t + 1), 600000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const load = React.useCallback(async () => {
+    try {
+      if (!supabase) {
+        setOrders(airOrderLocalRows().map(normalizeAirRow));
+      } else {
+        const { data } = await supabase
+          .from("air_orders")
+          .select(
+            "id, order_id, customer, shop_name, status, created_at, updated_at",
+          )
+          .order("updated_at", { ascending: false })
+          .limit(5000);
+        const list = (data || []).map(normalizeAirRow);
+        const map = {};
+        for (let i = 0; i < list.length; i += 500) {
+          const ids = list.slice(i, i + 500).map((r) => r.id);
+          const { data: h } = await supabase
+            .from("air_order_history")
+            .select("air_order_id, status, created_at")
+            .in("air_order_id", ids)
+            .order("created_at", { ascending: true });
+          (h || []).forEach((x) => {
+            (map[x.air_order_id] = map[x.air_order_id] || []).push(x);
+          });
+        }
+        setOrders(list);
+        setHist(map);
+      }
+    } catch {
+      setOrders([]);
+    }
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    load();
+    const onVis = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVis);
+    const id = window.setInterval(load, 300000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.clearInterval(id);
+    };
+  }, [load]);
+
+  const rows = useMemo(() => {
+    if (rulesLoading) return [];
+    const now = new Date();
+    return orders
+      .filter((o) => o.status !== AIR_ORDER_TERMINAL) // refunds are not SLA-tracked
+      .map((o) => {
+        const input = airSlaBuildInput(o, hist[o.id]);
+        return {
+          ...input,
+          sla: evaluateShipmentSla(input, transport, warehouse, now),
+        };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, hist, transport, warehouse, rulesLoading, tick]);
+
+  return { rows, loading: !ready || rulesLoading };
+}
+
+function AirSlaSection() {
+  const navigate = useNavigate();
+  const { user: authUser } = useAuth();
+  const canOpenAir = canOpenAirPages(authUser);
+  const { rows, loading } = useAirSlaRows();
+  const { items: notifItems, loading: notifLoading } = useSlaNotifications({
+    limit: 100,
+  });
+  const airAlerts = notifItems.filter(slaNotifIsAir).slice(0, 5);
+  const [range, setRange] = useState("30d");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const data = useMemo(() => {
+    const [a, b] = slaRangeBounds(range, from, to);
+    const list = rows.filter((r) => {
+      if (!r.createdAt) return true;
+      const t = new Date(r.createdAt);
+      return (!a || t >= a) && (!b || t < b);
+    });
+    const count = (st) => list.filter((r) => r.sla.overall === st).length;
+    const ok = count(SLA_STATUS.ON_TIME) + count(SLA_STATUS.COMPLETED);
+    return {
+      total: list.length,
+      late: count(SLA_STATUS.LATE),
+      noUpdate: count(SLA_STATUS.NO_UPDATE),
+      warning: count(SLA_STATUS.WARNING),
+      onTime: count(SLA_STATUS.ON_TIME),
+      completed: count(SLA_STATUS.COMPLETED),
+      pct: list.length ? Math.round((ok / list.length) * 100) : 0,
+    };
+  }, [rows, range, from, to]);
+
+  const cards = [
+    ["Late", data.late, "text-red-600", "bg-red-50", "AlarmClock"],
+    ["No Update", data.noUpdate, "text-slate-600", "bg-slate-100", "BellOff"],
+    ["Warning", data.warning, "text-amber-600", "bg-amber-50", "TriangleAlert"],
+    [
+      "On-Time %",
+      `${data.pct}%`,
+      "text-emerald-600",
+      "bg-emerald-50",
+      "CircleCheck",
+    ],
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="font-display font-bold text-[15px] text-ink-900 flex items-center gap-2.5">
+          <Icons.Plane size={17} className="text-ink-700" />
+          SLA Overview · AIR
+        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          {SLA_RANGES.map(([k, l]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setRange(k)}
+              className={`rounded-full px-3 py-1.5 text-xs font-semibold border transition ${range === k ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"}`}
+            >
+              {l}
+            </button>
+          ))}
+          {range === "custom" && (
+            <>
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="h-8 rounded-lg border border-slate-200 px-2 text-xs"
+              />
+              <span className="text-xs text-slate-400">→</span>
+              <input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="h-8 rounded-lg border border-slate-200 px-2 text-xs"
+              />
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {cards.map(([label, n, tc, bg, ic]) => {
+          const I = Icons[ic] || Icons.Circle;
+          return (
+            <div
+              key={label}
+              className="cb-surface cb-card p-4 flex items-center gap-3"
+            >
+              <div
+                className={`h-10 w-10 rounded-full grid place-items-center ${bg} ${tc}`}
+              >
+                <I size={18} />
+              </div>
+              <div>
+                <div className="text-2xl font-extrabold text-ink-900 leading-none tabular-nums">
+                  {loading ? "…" : n}
+                </div>
+                <div className="text-xs text-ink-600/60 mt-1">{label}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <DashPanel
+        icon="BellRing"
+        title="SLA Alerts · AIR"
+        action={canOpenAir ? "View AIR" : null}
+        onAction={() => navigate("/air-shipments")}
+      >
+        {notifLoading ? (
+          <SkeletonListRows rows={3} />
+        ) : airAlerts.length === 0 ? (
+          <div className="px-5 pb-7 pt-2 text-center">
+            <div className="mx-auto w-11 h-11 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <Icons.CircleCheck size={22} />
+            </div>
+            <p className="text-sm text-ink-600/55 mt-2.5">
+              No active AIR SLA alerts.
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-100 cb-fade-in">
+            {airAlerts.map((n) => (
+              <li key={n.id} className="flex items-center gap-3 px-5 py-3">
+                <SlaNotifIcon level={n.level} />
+                <div className="min-w-0 flex-1">
+                  {canOpenAir ? (
+                    <Link
+                      to={slaNotifPath(n)}
+                      className="text-sm font-medium text-ink-900 hover:text-signal-blue block truncate"
+                    >
+                      {n.message}
+                    </Link>
+                  ) : (
+                    <span className="text-sm font-medium text-ink-900 block truncate">
+                      {n.message}
+                    </span>
+                  )}
+                  <div className="text-xs text-ink-600/55">
+                    {timeAgoLabel(n.created_at)}
+                  </div>
+                </div>
+                <SlaBadge status={n.level} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </DashPanel>
     </div>
   );
 }
@@ -32747,11 +33046,28 @@ const SLA_NOTIF_LEVELS = [
 const slaNotifSettingKey = (level) =>
   level === "Warning" ? "warning" : level === "Late" ? "late" : "no_update";
 
+// AIR alerts share the same table; their `tk` is stored as "AIR:<order id>"
+// so they can never collide with a real TK.
+const SLA_AIR_PREFIX = "AIR:";
+const slaNotifIsAir = (n) => String(n?.tk || "").startsWith(SLA_AIR_PREFIX);
+const slaNotifRef = (n) =>
+  slaNotifIsAir(n) ? `AIR ${n.tk.slice(SLA_AIR_PREFIX.length)}` : n.tk;
+const slaNotifPath = (n) =>
+  slaNotifIsAir(n)
+    ? `/air-shipments/${encodeURIComponent(n.tk.slice(SLA_AIR_PREFIX.length))}`
+    : `/packages/${n.tk}`;
+
+// A role can see AIR dashboard/alerts (dashboard.air) without being allowed to
+// open the AIR pages (air_order.view); those pages would bounce back to "/".
+const canOpenAirPages = (user) => hasPermission(user, "air_order.view");
+const slaNotifCanOpen = (user, n) => !slaNotifIsAir(n) || canOpenAirPages(user);
+
 // ---- pure: what alerts should exist right now ----
 function slaNotifDesired(rows) {
   const out = [];
   for (const r of rows) {
     if (!r.tk || r.completedAt) continue;
+    const name = r.label || `Shipment ${r.tk}`;
     const t = r.sla.transit;
     const w = r.sla.warehouse;
     if (t && !t.finished) {
@@ -32761,7 +33077,7 @@ function slaNotifDesired(rows) {
           kind: "transit",
           level: "Late",
           delay_days: t.delayDays,
-          message: `Shipment ${r.tk} is Late by ${t.delayDays} ${t.delayDays === 1 ? "day" : "days"}.`,
+          message: `${name} is Late by ${t.delayDays} ${t.delayDays === 1 ? "day" : "days"}.`,
         });
       else if (t.status === SLA_STATUS.WARNING)
         out.push({
@@ -32769,7 +33085,7 @@ function slaNotifDesired(rows) {
           kind: "transit",
           level: "Warning",
           delay_days: 0,
-          message: `Shipment ${r.tk} is approaching SLA limit.`,
+          message: `${name} is approaching SLA limit.`,
         });
     }
     if (w && w.status === SLA_STATUS.NO_UPDATE)
@@ -32778,7 +33094,7 @@ function slaNotifDesired(rows) {
         kind: "warehouse",
         level: "No Update",
         delay_days: w.delayDays,
-        message: `Shipment ${r.tk} has not been updated by ${w.warehouse} for ${w.daysWithoutUpdate} ${w.daysWithoutUpdate === 1 ? "day" : "days"}.`,
+        message: `${name} has not been updated by ${w.warehouse} for ${w.daysWithoutUpdate} ${w.daysWithoutUpdate === 1 ? "day" : "days"}.`,
       });
   }
   return out.map((d) => ({ ...d, dedupe_key: `${d.tk}|${d.kind}|${d.level}` }));
@@ -32951,10 +33267,18 @@ function useSlaNotifications({
   includeResolved = false,
   limit = 200,
 } = {}) {
+  const { user } = useAuth();
+  const canAir = hasPermission(user, "dashboard.air");
+  const canChina = hasPermission(user, "dashboard.china");
   const [state, setState] = useState({ items: [], loading: true, error: "" });
   const load = React.useCallback(async () => {
     try {
-      const items = await slaNotifFetch({ tk, includeResolved, limit });
+      const all = await slaNotifFetch({ tk, includeResolved, limit });
+      // Lists follow the Dashboard scopes. A single-TK lookup (Package
+      // Detail) is not scope-filtered for China.
+      const items = all.filter((n) =>
+        slaNotifIsAir(n) ? canAir : tk ? true : canChina,
+      );
       setState({ items, loading: false, error: "" });
     } catch (e) {
       setState((s) => ({
@@ -32963,7 +33287,7 @@ function useSlaNotifications({
         error: e?.message || "Unable to load notifications.",
       }));
     }
-  }, [tk, includeResolved, limit]);
+  }, [tk, includeResolved, limit, canAir, canChina]);
   useEffect(() => {
     load();
     const onFocus = () => document.visibilityState === "visible" && load();
@@ -33016,6 +33340,46 @@ function SlaNotificationSync() {
   return null;
 }
 
+// Same job as SlaNotificationSync, for AIR orders (Indonesia → Cambodia).
+function SlaAirNotificationSync() {
+  const { user } = useAuth();
+  const canAir = hasPermission(user, "dashboard.air");
+  const { rows, loading } = useAirSlaRows();
+  const sig = useRef("");
+  const busy = useRef(false);
+  const [ver, setVer] = useState(0);
+  useEffect(() => {
+    const bump = () => {
+      sig.current = "";
+      setVer((v) => v + 1);
+    };
+    window.addEventListener("cargo-bridge-sla-updated", bump);
+    return () => window.removeEventListener("cargo-bridge-sla-updated", bump);
+  }, []);
+  useEffect(() => {
+    if (!canAir || loading || !rows.length || busy.current) return;
+    const s = rows
+      .map(
+        (r) =>
+          `${r.tk}:${r.sla.overall}:${r.sla.transit?.status || ""}:${r.sla.warehouse?.status || ""}:${r.sla.transit?.delayDays ?? ""}`,
+      )
+      .join("|");
+    if (s === sig.current) return;
+    sig.current = s;
+    busy.current = true;
+    slaNotifSync(rows)
+      .then(
+        (changed) =>
+          changed && window.dispatchEvent(new CustomEvent(SLA_NOTIF_EVENT)),
+      )
+      .catch((e) => console.error("[SLA notifications · AIR] sync failed", e))
+      .finally(() => {
+        busy.current = false;
+      });
+  }, [rows, loading, ver, canAir]);
+  return null;
+}
+
 function SlaNotifIcon({ level }) {
   const cls =
     level === "Late"
@@ -33040,6 +33404,7 @@ function SlaNotifIcon({ level }) {
 
 function NotificationCenterPage() {
   const navigate = useNavigate();
+  const { user: authUser } = useAuth();
   const { items, loading, error } = useSlaNotifications({
     includeResolved: true,
     limit: 500,
@@ -33172,17 +33537,23 @@ function NotificationCenterPage() {
                         Resolved
                       </span>
                     )}
-                    <button
-                      type="button"
-                      className="font-semibold text-blue-600 hover:underline"
-                      onClick={() => {
-                        if (!n.read_at)
-                          slaNotifMarkRead([n.id]).catch(() => {});
-                        navigate(`/packages/${n.tk}`);
-                      }}
-                    >
-                      {n.tk}
-                    </button>
+                    {slaNotifCanOpen(authUser, n) ? (
+                      <button
+                        type="button"
+                        className="font-semibold text-blue-600 hover:underline"
+                        onClick={() => {
+                          if (!n.read_at)
+                            slaNotifMarkRead([n.id]).catch(() => {});
+                          navigate(slaNotifPath(n));
+                        }}
+                      >
+                        {slaNotifRef(n)}
+                      </button>
+                    ) : (
+                      <span className="font-semibold text-slate-600">
+                        {slaNotifRef(n)}
+                      </span>
+                    )}
                     <span>{timeAgoLabel(n.created_at)}</span>
                   </div>
                 </div>
