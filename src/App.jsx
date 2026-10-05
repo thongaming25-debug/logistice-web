@@ -10970,6 +10970,192 @@ function CreateRowModal({
 }
 
 // ------------------------------------------------------------
+// components/CreateCustomerAccountModal.jsx
+// ------------------------------------------------------------
+// Staff "New Customer": creates the Auth login (Phone + Password, same as the
+// customer app's own Sign up) AND the customers row together through the
+// "create-customer-account" Edge Function, so the customer can sign in at once.
+const CREATE_CUSTOMER_FUNCTION = "create-customer-account-ts";
+
+function CreateCustomerAccountModal({ open, onClose, onCreated }) {
+  const [values, setValues] = useState({});
+  const [show, setShow] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setValues({ password: generateTempPassword() });
+      setShow(true);
+      setError("");
+      setCopied(false);
+    }
+  }, [open]);
+  if (!open) return null;
+  const set = (k, v) => setValues((o) => ({ ...o, [k]: v }));
+  const inputCls =
+    "w-full bg-white border border-mist-200 rounded-md px-3 py-2 text-sm outline-none focus:border-signal-blue";
+  const labelCls =
+    "block text-xs font-semibold text-ink-600/55 uppercase tracking-wide mb-1";
+
+  async function copyPw() {
+    try {
+      await navigator.clipboard.writeText(values.password || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {}
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (saving) return;
+    const name = (values.name || "").trim();
+    const phone = (values.phone || "").trim();
+    const password = values.password || "";
+    if (!name) return setError("សូមបញ្ចូលឈ្មោះ");
+    if (phone.replace(/\D/g, "").length < 6)
+      return setError("លេខទូរស័ព្ទមិនត្រឹមត្រូវ");
+    if (password.length < 6)
+      return setError("Password ត្រូវមានយ៉ាងតិច 6 តួអក្សរ");
+    setSaving(true);
+    setError("");
+    try {
+      if (!supabase) throw new Error("Supabase មិនទាន់តភ្ជាប់");
+      const { data: session } = await supabase.auth.getSession();
+      const { data, error: fnError } = await supabase.functions.invoke(
+        CREATE_CUSTOMER_FUNCTION,
+        {
+          body: { name, phone, email: (values.email || "").trim(), password },
+          headers: {
+            Authorization: `Bearer ${session.session?.access_token}`,
+          },
+        },
+      );
+      if (fnError) throw fnError;
+      if (data?.error) throw new Error(data.error);
+      onCreated(data?.data);
+      onClose();
+    } catch (err) {
+      setError(await edgeFnErrorMessage(err, "មិនអាចបង្កើតអតិថិជនបានទេ"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-ink-900/40 z-50 flex items-center justify-center px-4"
+      onClick={onClose}
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+        className="bg-white rounded-md shadow-lg w-full max-w-md max-h-[85vh] overflow-y-auto"
+      >
+        <div className="px-5 py-4 border-b border-mist-200">
+          <h3 className="font-display font-bold text-base text-ink-900">
+            New Customer
+          </h3>
+          <p className="text-xs text-ink-600/55 mt-0.5">
+            អតិថិជនអាចចូលប្រើដោយ Phone + Password នេះភ្លាមៗ
+          </p>
+        </div>
+        <div className="p-5 space-y-3.5">
+          {error && (
+            <div className="flex items-center gap-2 text-sm text-signal-red bg-signal-red/10 rounded-md px-3 py-2">
+              <TriangleAlert size={14} className="shrink-0" />
+              {error}
+            </div>
+          )}
+          <div>
+            <label className={labelCls}>Name</label>
+            <input
+              required
+              autoFocus
+              value={values.name ?? ""}
+              onChange={(e) => set("name", e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Phone (ប្រើសម្រាប់ Login)</label>
+            <input
+              required
+              inputMode="tel"
+              value={values.phone ?? ""}
+              onChange={(e) => set("phone", e.target.value)}
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Password</label>
+            <div className="flex items-center gap-2">
+              <input
+                required
+                type={show ? "text" : "password"}
+                value={values.password ?? ""}
+                onChange={(e) => set("password", e.target.value)}
+                className={inputCls}
+              />
+              <button
+                type="button"
+                onClick={() => setShow((v) => !v)}
+                className="h-9 w-9 shrink-0 rounded-md border border-mist-200 grid place-items-center text-ink-600/60"
+                aria-label="Show / hide password"
+              >
+                {show ? <Icons.EyeOff size={15} /> : <Icons.Eye size={15} />}
+              </button>
+              <button
+                type="button"
+                onClick={copyPw}
+                className="h-9 px-2.5 shrink-0 rounded-md border border-mist-200 text-xs font-semibold text-ink-700"
+              >
+                {copied ? "Copied" : "Copy"}
+              </button>
+              <button
+                type="button"
+                onClick={() => set("password", generateTempPassword())}
+                className="h-9 px-2.5 shrink-0 rounded-md border border-mist-200 text-xs font-semibold text-ink-700"
+              >
+                Generate
+              </button>
+            </div>
+            <p className="text-xs text-ink-600/45 mt-1">
+              យ៉ាងតិច 6 តួអក្សរ — ចម្លងផ្ញើជូនអតិថិជនមុនបិទ Form នេះ។
+            </p>
+          </div>
+          <div>
+            <label className={labelCls}>Email (មិនចាំបាច់)</label>
+            <input
+              type="email"
+              value={values.email ?? ""}
+              onChange={(e) => set("email", e.target.value)}
+              className={inputCls}
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-mist-200">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm font-medium text-ink-700 px-3.5 py-2 rounded-md hover:bg-mist-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="flex items-center gap-1.5 bg-signal-blue text-white text-sm font-medium px-3.5 py-2 rounded-md hover:bg-signal-blue/90 disabled:opacity-60"
+          >
+            {saving ? "កំពុងបង្កើត..." : "Create"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------
 // components/CreateStaffUserModal.jsx
 // ------------------------------------------------------------
 // Used only for the /users module. Unlike CreateRowModal (which inserts
@@ -12424,6 +12610,26 @@ function generateTempPassword(len = 8) {
   return Array.from(buf, (n) => chars[n % chars.length]).join("");
 }
 
+// supabase-js hides the real reason of a failed Edge Function behind
+// "Edge Function returned a non-2xx status code". The reason is in the
+// response body (`{ error: "..." }`), so read it from err.context.
+async function edgeFnErrorMessage(err, fallback = "") {
+  try {
+    const text = await err?.context?.text?.();
+    if (text) {
+      try {
+        const body = JSON.parse(text);
+        return body.error || body.message || text;
+      } catch {
+        return text;
+      }
+    }
+  } catch {
+    /* fall through to the generic message */
+  }
+  return err?.message || fallback;
+}
+
 function CustomerResetPasswordModal({ row, onClose }) {
   const [pw, setPw] = useState(() => generateTempPassword());
   const [show, setShow] = useState(true);
@@ -12472,7 +12678,7 @@ function CustomerResetPasswordModal({ row, onClose }) {
         `${row.name || row.id} អាចចូលប្រើដោយ Password ថ្មីបានភ្លាម។`,
       );
     } catch (err) {
-      const msg = err?.message || "មិនអាច Reset Password បានទេ";
+      const msg = await edgeFnErrorMessage(err, "មិនអាច Reset Password បានទេ");
       setError(msg);
       emitCBToast("err", "Reset failed", msg);
     } finally {
@@ -13622,6 +13828,19 @@ function ListPage({
               `${row?.name || row?.email || "User"} was created successfully.`,
             );
             return supabase ? refetch() : prependRow(row);
+          }}
+        />
+      ) : path === "/customers" && supabase ? (
+        <CreateCustomerAccountModal
+          open={showCreate}
+          onClose={() => setShowCreate(false)}
+          onCreated={(row) => {
+            emitCBToast(
+              "ok",
+              "Customer created",
+              `${row?.customer_code || ""} ${row?.name || ""} អាចចូលប្រើដោយ Phone + Password បានភ្លាម។`,
+            );
+            return refetch();
           }}
         />
       ) : isTransferModule ? (
