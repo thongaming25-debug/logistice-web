@@ -10056,7 +10056,7 @@ function Sidebar({ open, onClose }) {
               <img
                 src={sidebarLogo}
                 alt="Company logo"
-                className="w-full h-full object-contain bg-white"
+                className="w-full h-full object-cover"
               />
             ) : (
               <Icons.Waypoints size={18} className="text-white" />
@@ -14452,7 +14452,7 @@ function Login() {
                 <img
                   src={loginCompany.logoUrl || loginCompany.logoDataUrl}
                   alt={`${loginCompany.name || "Company"} logo`}
-                  className="h-full w-full bg-white object-contain p-1.5"
+                  className="h-full w-full object-cover"
                 />
               ) : (
                 <Waypoints size={27} className="text-white" />
@@ -14557,8 +14557,19 @@ function Login() {
           </form>
         </div>
 
-        <div className="mt-5 text-center text-[11px] text-ink-600/40">
-          © 2026 {loginCompany.name || "Cargo Bridge"} Logistics
+        <div className="mt-6 flex flex-col items-center gap-2 text-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-3.5 py-1.5 text-[11.5px] text-ink-600/60 shadow-sm backdrop-blur">
+            <Icons.Code2 size={13} className="text-signal-blue" />
+            <span>
+              Developed by{" "}
+              <span className="font-semibold tracking-tight text-ink-900">
+                Thon KH
+              </span>
+            </span>
+          </div>
+          <div className="text-[10.5px] text-ink-600/40">
+            © 2026 {loginCompany.name || "Cargo Bridge"}. All rights reserved.
+          </div>
         </div>
       </div>
     </div>
@@ -15022,7 +15033,7 @@ function Dashboard() {
       <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
           <h1 className="font-display font-extrabold text-xl text-ink-900 cb-page-title">
-            Welcome back{who ? `, ${who}` : ""}
+            Welcome back{who ? `, ${who}` : ""} 👋
           </h1>
           <p className="text-sm text-ink-600/55 mt-0.5">
             Here’s what’s happening with your logistics today.
@@ -24822,6 +24833,10 @@ const CustomerApp = (() => {
   // ---------- Auth ----------
   function Auth() {
     const { login, signup, me, tr } = useApp();
+    // Brand (name + logo) comes from Admin → Settings → Company Profile.
+    const brand = useSystemSettings()?.company;
+    const brandName = brand?.name || "Cargo Bridge";
+    const brandLogo = brand?.logoUrl || brand?.logoDataUrl || "";
     const [mode, setMode] = useState("login");
     const [f, setF] = useState({
       id: "",
@@ -24955,11 +24970,19 @@ const CustomerApp = (() => {
             <div className="absolute top-4 right-4 z-10">
               <LangBtn />
             </div>
-            <div className="relative mx-auto mb-4 grid h-[72px] w-[72px] place-items-center rounded-[22px] bg-white/15 ring-1 ring-white/30 shadow-lg shadow-blue-900/20">
-              <Ship size={34} />
+            <div className="relative mx-auto mb-4 grid h-[72px] w-[72px] place-items-center overflow-hidden rounded-[22px] bg-white/15 ring-1 ring-white/30 shadow-lg shadow-blue-900/20">
+              {brandLogo ? (
+                <img
+                  src={brandLogo}
+                  alt={`${brandName} logo`}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <Ship size={34} />
+              )}
             </div>
             <div className="relative text-[28px] font-extrabold tracking-tight leading-none">
-              Cargo Bridge
+              {brandName}
             </div>
             <p className="relative mt-1.5 text-blue-100 text-xs">
               {tr("Global to Your Door", "ដឹកជញ្ជូនដល់មាត់ទ្វារអ្នក")}
@@ -25115,9 +25138,20 @@ const CustomerApp = (() => {
             </form>
           </Card>
 
-          <p className="mt-6 text-center text-[11px] text-slate-400">
-            © Develop by Thon KH
-          </p>
+          <div className="mt-6 flex flex-col items-center gap-2 text-center">
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-3.5 py-1.5 text-[11.5px] text-slate-500 shadow-sm">
+              <Icons.Code2 size={13} className="text-blue-600" />
+              <span>
+                Developed by{" "}
+                <span className="font-semibold tracking-tight text-slate-800">
+                  Thon KH
+                </span>
+              </span>
+            </div>
+            <div className="text-[10.5px] text-slate-400">
+              © 2026 All rights reserved.
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -25385,7 +25419,7 @@ const CustomerApp = (() => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold">
-                {tr(`Hello ${me.name} `, `សួស្តី ${me.name} `)}
+                {tr(`Hello ${me.name} 👋`, `សួស្តី ${me.name} 👋`)}
               </h1>
               <p className="text-blue-100 text-sm">
                 {tr("Welcome to Brathna", "សូមស្វាគមន៍មកកាន់ Brathna")}
@@ -35001,7 +35035,7 @@ function SettingsPage() {
                       {logoSrc ? (
                         <img
                           src={logoSrc}
-                          className="w-full h-full object-contain"
+                          className="w-full h-full object-cover"
                         />
                       ) : (
                         <div className="w-12 h-12 rounded-xl bg-blue-600 text-white grid place-items-center">
@@ -41696,9 +41730,57 @@ body{background:var(--cb-bg);color:var(--cb-text);}
 .cb-field-input:-webkit-autofill,.cb-field-input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px #fff inset!important;-webkit-text-fill-color:#0f172a;}
 `;
 
+// Keeps the browser tab title + icon in sync with Settings → Company Profile
+// (same name and same logo as the login page / sidebar).
+function BrandHead() {
+  const company = useSystemSettings()?.company;
+  const name = company?.name || "";
+  const logo = company?.logoUrl || company?.logoDataUrl || "";
+  useEffect(() => {
+    if (name) document.title = name;
+  }, [name]);
+  useEffect(() => {
+    if (!logo) return;
+    let link = document.querySelector('link[rel~="icon"]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.removeAttribute("type"); // let the browser sniff png/svg/jpg
+    link.href = logo; // fallback until the square version is ready
+    let cancelled = false;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        if (cancelled) return;
+        const size = 64;
+        const c = document.createElement("canvas");
+        c.width = c.height = size;
+        const ctx = c.getContext("2d");
+        const side = Math.min(img.naturalWidth, img.naturalHeight);
+        const sx = (img.naturalWidth - side) / 2;
+        const sy = (img.naturalHeight - side) / 2;
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+        link.type = "image/png";
+        link.href = c.toDataURL("image/png");
+      } catch {
+        /* cross-origin blocked → keep the original image */
+      }
+    };
+    img.src = logo;
+    return () => {
+      cancelled = true;
+    };
+  }, [logo]);
+  return null;
+}
+
 function App() {
   return (
     <>
+      <BrandHead />
       <style>{CB_DESIGN_CSS}</style>
       <GlobalToastHost />
       <GlobalConfirmHost />
