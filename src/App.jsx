@@ -66,6 +66,7 @@ import {
   Circle,
 } from "lucide-react";
 
+import { createPortal } from "react-dom";
 import { createClient } from "@supabase/supabase-js";
 import "./index.css";
 
@@ -1888,7 +1889,7 @@ const MODULES = {
       col("id", "Customer ID", {
         linkTo: (row) => `/customers/${encodeURIComponent(row.id)}`,
       }),
-      col("name", "Name"),
+      col("name", "Name", { avatar: true }),
       col("email", "Email"),
       col("phone", "Phone"),
       col("warehouse", "Default Warehouse"),
@@ -9181,6 +9182,18 @@ function DataTable({
                   >
                     {col.render ? (
                       col.render(row)
+                    ) : col.avatar ? (
+                      <span className="flex items-center gap-2.5">
+                        <span className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
+                          <UserAvatar
+                            url={row.avatar_url}
+                            initials={String(row[col.key] || "?")
+                              .slice(0, 1)
+                              .toUpperCase()}
+                          />
+                        </span>
+                        <span>{row[col.key]}</span>
+                      </span>
                     ) : col.status ? (
                       <StatusBadge label={row[col.key]} />
                     ) : col.linkTo ? (
@@ -9722,6 +9735,8 @@ const ADMIN_KM = {
   Cancel: "បោះបង់",
   Admin: "អ្នកគ្រប់គ្រង",
   "My Account": "គណនីរបស់ខ្ញុំ",
+  "Change photo": "ប្តូររូបភាព",
+  Remove: "លុប",
   "Log out": "ចាកចេញ",
   Language: "ភាសា",
   Appearance: "រូបរាង",
@@ -10114,8 +10129,26 @@ function Sidebar({ open, onClose }) {
 // ------------------------------------------------------------
 // components/Topbar.jsx
 // ------------------------------------------------------------
+function UserAvatar({ url, initials }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [url]);
+  if (url && !broken) {
+    return (
+      <img
+        src={url}
+        alt=""
+        onError={() => setBroken(true)}
+        className="absolute inset-0 w-full h-full rounded-full object-cover"
+      />
+    );
+  }
+  return <>{initials}</>;
+}
+
 function Topbar({ title, onMenuClick }) {
-  const { user, logout } = useAuth();
+  const { user, logout, updateAvatar } = useAuth();
+  const fileRef = useRef(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const { t, lang, theme } = useAdminPrefs();
   const [prefsModal, setPrefsModal] = useState(null); // null | "lang" | "theme"
   const navigate = useNavigate();
@@ -10256,6 +10289,56 @@ function Topbar({ title, onMenuClick }) {
   const displayName = user?.name || user?.email?.split("@")[0] || "User";
   const initials = displayName.slice(0, 2).toUpperCase();
 
+  async function handleAvatarChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !supabase) return;
+    if (!file.type.startsWith("image/")) return alert("សូមជ្រើសរើសរូបភាព");
+    if (file.size > 2 * 1024 * 1024) return alert("រូបភាពធំជាង 2MB");
+
+    setAvatarBusy(true);
+    try {
+      const path = `${user.id}/avatar`;
+      const { error: upErr } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true, contentType: file.type });
+      if (upErr) throw upErr;
+
+      const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+      const url = `${data.publicUrl}?t=${Date.now()}`;
+
+      const { error } = await supabase
+        .from("users")
+        .update({ avatar_url: url })
+        .eq("auth_user_id", user.id);
+      if (error) throw error;
+
+      updateAvatar(url);
+    } catch (err) {
+      alert(err.message || "មិនអាច upload បានទេ");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function handleAvatarRemove() {
+    if (!supabase) return;
+    setAvatarBusy(true);
+    try {
+      await supabase.storage.from("avatars").remove([`${user.id}/avatar`]);
+      const { error } = await supabase
+        .from("users")
+        .update({ avatar_url: null })
+        .eq("auth_user_id", user.id);
+      if (error) throw error;
+      updateAvatar(null);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
   async function handleLogout() {
     setMenuOpen(false);
     const ok = await confirmDialog({
@@ -10334,7 +10417,7 @@ function Topbar({ title, onMenuClick }) {
             aria-expanded={menuOpen}
           >
             <div className="cb-avatar">
-              {initials}
+              <UserAvatar url={user?.avatarUrl} initials={initials} />
               <span className="cb-dot" />
             </div>
             <div className="hidden sm:block text-left leading-tight min-w-0">
@@ -10414,40 +10497,68 @@ function Topbar({ title, onMenuClick }) {
           )}
         </div>
 
-        {showAccount && (
-          <div
-            className="fixed inset-0 bg-ink-900/40 z-50 flex items-center justify-center px-4"
-            onClick={() => setShowAccount(false)}
-          >
+        {showAccount &&
+          createPortal(
             <div
-              className="bg-white rounded-md shadow-lg w-full max-w-sm p-5"
-              onClick={(e) => e.stopPropagation()}
+              className="fixed inset-0 bg-ink-900/40 z-50 flex items-center justify-center px-4"
+              onClick={() => setShowAccount(false)}
             >
-              <h3 className="font-display font-bold text-base text-ink-900 mb-4">
-                {t("My Account")}
-              </h3>
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-11 h-11 rounded-full bg-ink-800 text-white text-sm font-semibold flex items-center justify-center shrink-0">
-                  {initials}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-ink-900 capitalize truncate">
-                    {displayName}
-                  </div>
-                  <div className="text-xs text-ink-600/55 truncate">
-                    {user?.email}
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => setShowAccount(false)}
-                className="w-full text-sm font-medium text-center border border-mist-200 py-2 rounded-md hover:bg-mist-50"
+              <div
+                className="bg-white rounded-md shadow-lg w-full max-w-sm p-5"
+                onClick={(e) => e.stopPropagation()}
               >
-                {t("Close")}
-              </button>
-            </div>
-          </div>
-        )}
+                <h3 className="font-display font-bold text-base text-ink-900 mb-4">
+                  {t("My Account")}
+                </h3>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="relative w-14 h-14 rounded-full bg-ink-800 text-white text-base font-semibold flex items-center justify-center shrink-0 overflow-hidden">
+                    <UserAvatar url={user?.avatarUrl} initials={initials} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-ink-900 capitalize truncate">
+                      {displayName}
+                    </div>
+                    <div className="text-xs text-ink-600/55 truncate">
+                      {user?.email}
+                    </div>
+                  </div>
+                </div>
+
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleAvatarChange}
+                />
+                <div className="flex gap-2 mb-3">
+                  <button
+                    disabled={avatarBusy || !user?.isStaff}
+                    onClick={() => fileRef.current?.click()}
+                    className="flex-1 text-sm font-medium border border-mist-200 py-2 rounded-md hover:bg-mist-50 disabled:opacity-50"
+                  >
+                    {avatarBusy ? "..." : t("Change photo")}
+                  </button>
+                  {user?.avatarUrl && (
+                    <button
+                      disabled={avatarBusy}
+                      onClick={handleAvatarRemove}
+                      className="text-sm font-medium text-signal-red border border-mist-200 px-3 py-2 rounded-md hover:bg-signal-red/5 disabled:opacity-50"
+                    >
+                      {t("Remove")}
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => setShowAccount(false)}
+                  className="w-full text-sm font-medium text-center border border-mist-200 py-2 rounded-md hover:bg-mist-50"
+                >
+                  {t("Close")}
+                </button>
+              </div>
+            </div>,
+            document.body,
+          )}
       </header>
 
       {prefsModal && (
@@ -10703,7 +10814,7 @@ function pathToTable(path) {
 // transfer lookups) can keep reading `row.id` without knowing the
 // difference — and never fetch the raw uuid for display.
 const CUSTOMERS_DISPLAY_SELECT =
-  "id:customer_code, name, email, phone, warehouse, status, created_at";
+  "id:customer_code, name, email, phone, warehouse, status, created_at, avatar_url";
 
 // Loads rows for a module from Supabase. If Supabase isn't configured, or
 // the table doesn't exist yet / errors out, it falls back to the mock rows
@@ -13911,7 +14022,7 @@ async function hydrateProfile(authUser) {
   let { data: staffRow, error: staffErr } = await supabase
     .from("users")
     .select(
-      "id, auth_user_id, name, role, email, status, department, warehouse_code",
+      "id, auth_user_id, name, role, email, status, department, warehouse_code, avatar_url",
     )
     .or(staffFilter)
     .maybeSingle();
@@ -13940,6 +14051,7 @@ async function hydrateProfile(authUser) {
       role: staffRow.role,
       department: staffRow.department || null,
       warehouse: staffRow.warehouse_code || null,
+      avatarUrl: staffRow.avatar_url || null,
       isStaff: true,
       allowedPaths: [], // recomputed live from the role matrix (withLivePaths)
     };
@@ -14081,9 +14193,22 @@ export function AuthProvider({ children }) {
     setUser(null);
   }
 
+  // Profile photo: update the in-memory user so the Topbar refreshes at once.
+  function updateAvatar(url) {
+    setUser((u) => (u ? { ...u, avatarUrl: url } : u));
+  }
+
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, signUp, logout, isMock: !supabase }}
+      value={{
+        user,
+        loading,
+        login,
+        signUp,
+        logout,
+        updateAvatar,
+        isMock: !supabase,
+      }}
     >
       {children}
     </AuthContext.Provider>
@@ -24120,6 +24245,67 @@ const CustomerApp = (() => {
       return null;
     };
 
+    // ----- Profile: name / email / photo (customers row) -----
+    // NOTE: `email` here is only a CONTACT email. The login email stays the
+    // phone-derived one, so changing it never breaks Phone + Password login.
+    const saveProfile = async ({ name, email }) => {
+      const n = String(name || "").trim();
+      const e = String(email || "").trim();
+      if (!supabase || !me)
+        return tr(
+          "The service is not connected yet.",
+          "សេវាមិនទាន់តភ្ជាប់នៅឡើយទេ។",
+        );
+      if (!n) return tr("Please enter your name", "សូមបញ្ចូលឈ្មោះ");
+      if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+        return tr("Invalid email address", "អ៊ីមែលមិនត្រឹមត្រូវ");
+      // RPC (security definer) — a plain table update was silently blocked
+      // by RLS (0 rows changed, no error), so nothing was saved.
+      const { error } = await supabase.rpc("customer_update_profile", {
+        p_name: n,
+        p_email: e,
+      });
+      if (error) return error.message;
+      setMe((m) => (m ? { ...m, name: n, email: e || null } : m));
+      return null;
+    };
+    const uploadAvatar = async (file) => {
+      if (!supabase || !me?.auth_user_id)
+        return tr(
+          "The service is not connected yet.",
+          "សេវាមិនទាន់តភ្ជាប់នៅឡើយទេ។",
+        );
+      if (!file?.type?.startsWith("image/"))
+        return tr("Please choose an image", "សូមជ្រើសរើសរូបភាព");
+      if (file.size > 2 * 1024 * 1024)
+        return tr("Image is larger than 2MB", "រូបភាពធំជាង 2MB");
+      const path = `${me.auth_user_id}/avatar`;
+      const { error: upErr } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true, contentType: file.type });
+      if (upErr) return upErr.message;
+      const { data } = supabase.storage.from("avatars").getPublicUrl(path);
+      const url = `${data.publicUrl}?t=${Date.now()}`;
+      const { error } = await supabase.rpc("customer_set_avatar", {
+        p_url: url,
+      });
+      if (error) return error.message;
+      setMe((m) => (m ? { ...m, avatar_url: url } : m));
+      return null;
+    };
+    const removeAvatar = async () => {
+      if (!supabase || !me?.auth_user_id) return null;
+      await supabase.storage
+        .from("avatars")
+        .remove([`${me.auth_user_id}/avatar`]);
+      const { error } = await supabase.rpc("customer_set_avatar", {
+        p_url: null,
+      });
+      if (error) return error.message;
+      setMe((m) => (m ? { ...m, avatar_url: null } : m));
+      return null;
+    };
+
     const saveAddr = async (a) => {
       const row = {
         label: a.label,
@@ -24356,6 +24542,9 @@ const CustomerApp = (() => {
       signup,
       logout,
       changePassword,
+      saveProfile,
+      uploadAvatar,
+      removeAvatar,
       ships,
       airShips,
       notifs,
@@ -26714,9 +26903,172 @@ const CustomerApp = (() => {
     );
   }
 
+  // ---------- Profile photo sheet (choose / remove) ----------
+  function AvatarSheet({ hasPhoto, onChoose, onRemove, onClose }) {
+    const { tr } = useApp();
+    const rows = [
+      [
+        Icons.Image,
+        tr("Choose from gallery", "ជ្រើសរូបពីអាល់ប៊ុម"),
+        onChoose,
+        false,
+      ],
+      ...(hasPhoto
+        ? [
+            [
+              Icons.Trash2,
+              tr("Remove current photo", "លុបរូបភាពបច្ចុប្បន្ន"),
+              onRemove,
+              true,
+            ],
+          ]
+        : []),
+    ];
+    return (
+      <div
+        className="fixed inset-0 bg-slate-900/50 z-[70] flex items-end justify-center text-slate-900"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="cb-fade-in bg-white w-full max-w-md rounded-t-3xl p-5 space-y-3"
+          style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+        >
+          <h2 className="font-bold text-lg">
+            {tr("Profile Photo", "រូបភាពប្រវត្តិរូប")}
+          </h2>
+          {rows.map(([I, label, fn, quiet]) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => {
+                onClose();
+                fn();
+              }}
+              className="w-full h-14 rounded-2xl flex items-center gap-3 px-3.5 font-semibold border border-slate-200 bg-white text-slate-800 active:bg-slate-50"
+            >
+              <span
+                className={`w-9 h-9 rounded-full grid place-items-center ${quiet ? "bg-slate-100 text-slate-500" : "bg-blue-50 text-blue-600"}`}
+              >
+                <I size={18} />
+              </span>
+              <span className="flex-1 text-left">{label}</span>
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full h-12 text-slate-500 font-semibold"
+          >
+            {tr("Cancel", "បោះបង់")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- Edit profile sheet (name + email) ----------
+  function EditProfileSheet({ onClose }) {
+    const { me, tr, say, saveProfile } = useApp();
+    const [name, setName] = useState(me.name || "");
+    const [email, setEmail] = useState(me.email || "");
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const submit = async () => {
+      setBusy(true);
+      setErr("");
+      const msg = await saveProfile({ name, email });
+      setBusy(false);
+      if (msg) return setErr(msg);
+      say(tr("Profile updated", "បានកែប្រែប្រវត្តិរូប"));
+      onClose();
+    };
+    return (
+      <div
+        className="fixed inset-0 bg-slate-900/50 z-[70] flex items-end justify-center text-slate-900"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="cb-fade-in bg-white w-full max-w-md rounded-t-3xl p-5 space-y-4"
+          style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+        >
+          <h2 className="font-bold text-lg">
+            {tr("Edit Profile", "កែប្រែប្រវត្តិរូប")}
+          </h2>
+          <Field
+            label={tr("Full Name", "ឈ្មោះពេញ")}
+            icon={Icons.User}
+            v={name}
+            set={setName}
+            ph={tr("Your name", "ឈ្មោះរបស់អ្នក")}
+          />
+          <Field
+            label={tr("Email", "អ៊ីមែល")}
+            icon={Icons.Mail}
+            v={email}
+            set={setEmail}
+            type="email"
+            ph="name@example.com"
+            hint={tr(
+              "Contact email only — you still sign in with Phone + Password.",
+              "ជាអ៊ីមែលទំនាក់ទំនងប៉ុណ្ណោះ — អ្នកនៅតែចូលដោយលេខទូរស័ព្ទ + លេខសម្ងាត់។",
+            )}
+          />
+          {err && (
+            <p className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">
+              {err}
+            </p>
+          )}
+          <Btn onClick={submit} loading={busy}>
+            {tr("Save", "រក្សាទុក")}
+          </Btn>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full h-12 text-slate-500 font-semibold"
+          >
+            {tr("Cancel", "បោះបង់")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ---------- Profile ----------
   function Profile() {
-    const { me, addrs, logout, tr, lang, theme } = useApp();
+    const {
+      me,
+      addrs,
+      logout,
+      tr,
+      lang,
+      theme,
+      say,
+      uploadAvatar,
+      removeAvatar,
+    } = useApp();
+    const fileRef = useRef(null);
+    const [editOpen, setEditOpen] = useState(false);
+    const [photoOpen, setPhotoOpen] = useState(false);
+    const [avatarBusy, setAvatarBusy] = useState(false);
+    const [imgBroken, setImgBroken] = useState(false);
+    useEffect(() => setImgBroken(false), [me.avatar_url]);
+    const onPick = async (e) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      setAvatarBusy(true);
+      const msg = await uploadAvatar(file);
+      setAvatarBusy(false);
+      say(msg || tr("Photo updated", "បានប្តូររូបភាព"));
+    };
+    const onRemove = async () => {
+      setAvatarBusy(true);
+      const msg = await removeAvatar();
+      setAvatarBusy(false);
+      if (msg) say(msg);
+    };
     const nav = useNavigate();
     const [langOpen, setLangOpen] = useState(false);
     const [themeOpen, setThemeOpen] = useState(false);
@@ -26765,15 +27117,61 @@ const CustomerApp = (() => {
         <Top title={tr("Profile", "គណនី")} />
         <div className="px-4 pt-5 space-y-4">
           <div className="text-center">
-            <span className="w-20 h-20 mx-auto rounded-full bg-blue-600 text-white text-3xl font-bold grid place-items-center">
-              {me.name?.[0] || "?"}
-            </span>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={onPick}
+            />
+            <div className="relative w-20 h-20 mx-auto">
+              <button
+                type="button"
+                disabled={avatarBusy}
+                onClick={() =>
+                  me.avatar_url ? setPhotoOpen(true) : fileRef.current?.click()
+                }
+                aria-label={tr("Change photo", "ប្តូររូបភាព")}
+                className="relative w-20 h-20 rounded-full overflow-hidden bg-blue-600 text-white text-3xl font-bold grid place-items-center disabled:opacity-60"
+              >
+                {me.avatar_url && !imgBroken ? (
+                  <img
+                    src={me.avatar_url}
+                    alt=""
+                    onError={() => setImgBroken(true)}
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : (
+                  me.name?.[0] || "?"
+                )}
+              </button>
+              <span className="absolute -bottom-0.5 -right-0.5 w-7 h-7 rounded-full bg-white border border-slate-200 shadow grid place-items-center text-blue-600 pointer-events-none">
+                {avatarBusy ? (
+                  <AuthSpinner size={14} />
+                ) : (
+                  <Icons.Camera size={14} />
+                )}
+              </span>
+            </div>
+            {photoOpen && (
+              <AvatarSheet
+                hasPhoto={!!me.avatar_url}
+                onChoose={() => fileRef.current?.click()}
+                onRemove={onRemove}
+                onClose={() => setPhotoOpen(false)}
+              />
+            )}
             <p className="font-bold text-lg mt-2">{me.name}</p>
             <p className="text-xs text-slate-500">
               {tr("Customer ID", "លេខសម្គាល់អតិថិជន")}:{" "}
               {me.customer_code || "—"}
             </p>
           </div>
+          <Btn ghost onClick={() => setEditOpen(true)}>
+            <Icons.Pencil size={17} />
+            {tr("Edit Profile", "កែប្រែប្រវត្តិរូប")}
+          </Btn>
+          {editOpen && <EditProfileSheet onClose={() => setEditOpen(false)} />}
           <Card className="divide-y divide-slate-100">
             {info.map(([k, v]) => (
               <div
@@ -37741,8 +38139,11 @@ function CustomerDetailPage() {
         {/* Summary header */}
         <div className="flex flex-wrap items-center gap-x-8 gap-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white">
-              {(cust.name || "?").slice(0, 1).toUpperCase()}
+            <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white">
+              <UserAvatar
+                url={cust.avatar_url}
+                initials={(cust.name || "?").slice(0, 1).toUpperCase()}
+              />
             </div>
             <div>
               <div className="text-xs text-slate-400">{cust.customer_code}</div>
