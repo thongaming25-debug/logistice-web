@@ -945,7 +945,11 @@ const PERMISSION_GROUPS = [
   {
     key: "dashboard",
     label: "Dashboard",
-    perms: [["dashboard.view", "View Dashboard"]],
+    perms: [
+      ["dashboard.view", "View Dashboard"],
+      ["dashboard.china", "Dashboard · China (Land / Sea)"],
+      ["dashboard.air", "Dashboard · AIR (Indonesia)"],
+    ],
   },
   {
     key: "tk",
@@ -1149,6 +1153,37 @@ const PATH_ACTIONS = {
 };
 
 // ---- Seed roles ---------------------------------------------------------
+// Roles saved before the China / AIR dashboard split only have
+// "dashboard.view". Give them the sections they already had access to, so
+// nobody ends up with an empty dashboard. Roles that already have either key
+// are left exactly as configured.
+const DASHBOARD_CHINA_HINTS = [
+  "tk.view",
+  "inbound.view",
+  "outbound.view",
+  "shipment.view",
+  "container.view",
+  "lookup.view",
+  "arrival.view",
+  "wh_arrived.view",
+  "kh_warehouse.view",
+  "sorting.view",
+  "delivery.view",
+  "exception.view",
+];
+function withDashboardScopes(perms) {
+  if (!perms.includes("dashboard.view")) return perms;
+  if (perms.includes("dashboard.china") || perms.includes("dashboard.air"))
+    return perms;
+  const air = perms.includes("air_order.view");
+  const china = DASHBOARD_CHINA_HINTS.some((k) => perms.includes(k)) || !air;
+  return [
+    ...perms,
+    ...(china ? ["dashboard.china"] : []),
+    ...(air ? ["dashboard.air"] : []),
+  ];
+}
+
 function normalizeRole(r) {
   return {
     name: r.name,
@@ -1159,7 +1194,11 @@ function normalizeRole(r) {
     system: !!r.system,
     legacy: !!r.legacy,
     permissions: Array.isArray(r.permissions)
-      ? r.permissions.filter((k) => PERMISSION_LABEL[k] && !SUPER_ONLY.has(k))
+      ? withDashboardScopes(
+          r.permissions.filter(
+            (k) => PERMISSION_LABEL[k] && !SUPER_ONLY.has(k),
+          ),
+        )
       : [],
   };
 }
@@ -9321,6 +9360,7 @@ const TONES = {
   teal: "bg-signal-teal/10 text-signal-teal",
   red: "bg-signal-red/10 text-signal-red",
   ink: "bg-ink-900/5 text-ink-800",
+  violet: "bg-violet-50 text-violet-700",
 };
 
 function StatCard({ icon, label, value, unit, tone = "ink", delta }) {
@@ -9403,7 +9443,7 @@ function RouteFlow() {
       <div className="flex items-center justify-between mb-5">
         <div>
           <div className="text-white font-display font-bold text-base">
-            China → Cambodia Pipeline
+            China → Cambodia Pipeline · Land / Sea
           </div>
           <div className="text-mist-100/45 text-xs mt-0.5">
             Current cross-border shipment status
@@ -9561,6 +9601,10 @@ const ADMIN_KM = {
   "Signing you in…": "កំពុងចូលគណនី…",
   "Redirecting to your dashboard": "កំពុងនាំអ្នកទៅផ្ទាំងគ្រប់គ្រង",
   "Preparing your workspace": "កំពុងរៀបចំកន្លែងធ្វើការ",
+  "Sign out": "ចាកចេញ",
+  "Are you sure you want to sign out?": "តើអ្នកប្រាកដថាចង់ចាកចេញមែនទេ?",
+  Confirm: "បញ្ជាក់",
+  Notifications: "ការជូនដំណឹង",
 };
 
 const ADMIN_DARK_CSS = String.raw`
@@ -9573,6 +9617,15 @@ html.cb-admin-dark .cb-input{background:#0f1626;border-color:#263043;color:#f1f5
 html.cb-admin-dark .cb-input:focus{background:#0f1626;border-color:#60a5fa;box-shadow:0 0 0 4px rgba(96,165,250,.14)}
 html.cb-admin-dark .cb-card{box-shadow:0 8px 28px rgba(0,0,0,.28)!important}
 html.cb-admin-dark .cb-table-row:hover{background:#1b2436}
+html.cb-admin-dark .cb-dot{border-color:#0f1626}
+html.cb-admin-dark .cb-bell-btn,html.cb-admin-dark .cb-user-pill{background-color:#151c2c;border-color:#263043}
+html.cb-admin-dark .cb-bell-btn:hover,html.cb-admin-dark .cb-user-pill:hover{background-color:#1b2436}
+html.cb-admin-dark .cb-badge{border-color:#0f1626}
+html.cb-admin-dark .cb-confirm-card{background-color:#151c2c;box-shadow:0 30px 70px -20px rgba(0,0,0,.7),inset 0 0 0 1px rgba(148,163,184,.12)}
+html.cb-admin-dark .cb-confirm-cancel{background-color:#1b2436;border-color:#2a3550;color:#e2e8f0}
+html.cb-admin-dark .cb-confirm-x{color:#94a3b8}
+html.cb-admin-dark .cb-confirm-x:hover{background-color:#1e2638;color:#e2e8f0}
+html.cb-admin-dark .cb-confirm-icon-danger{background-color:rgba(239,68,68,.16);color:#f87171}
 html.cb-admin-dark .cb-sidebar{background:linear-gradient(180deg,#070f20 0%,#0b1730 100%);border-right:1px solid #16203a}
 html.cb-admin-dark input,html.cb-admin-dark textarea,html.cb-admin-dark select{color:#f1f5f9}
 html.cb-admin-dark input::placeholder,html.cb-admin-dark textarea::placeholder{color:#64728b}
@@ -9623,6 +9676,8 @@ html.cb-admin-dark .bg-emerald-50{background-color:rgba(16,185,129,.14)}
 html.cb-admin-dark .text-emerald-600,html.cb-admin-dark .text-emerald-700,html.cb-admin-dark .text-emerald-800,html.cb-admin-dark .text-emerald-700\/80{color:#34d399}
 html.cb-admin-dark .border-emerald-200{border-color:rgba(52,211,153,.32)}
 html.cb-admin-dark .text-violet-700{color:#a78bfa}
+html.cb-admin-dark .bg-violet-50{background-color:rgba(139,92,246,.16)}
+html.cb-admin-dark .bg-violet-500{background-color:#8b5cf6}
 html.cb-admin-dark .text-rose-600,html.cb-admin-dark .text-rose-800{color:#fb7185}
 html.cb-admin-dark .border-rose-200{border-color:rgba(251,113,133,.32)}
 /* login page */
@@ -10056,6 +10111,14 @@ function Topbar({ title, onMenuClick }) {
 
   async function handleLogout() {
     setMenuOpen(false);
+    const ok = await confirmDialog({
+      variant: "signout",
+      title: t("Sign out"),
+      message: t("Are you sure you want to sign out?"),
+      confirmText: t("Confirm"),
+      cancelText: t("Cancel"),
+    });
+    if (!ok) return;
     await logout();
     navigate("/login", { replace: true });
   }
@@ -10100,39 +10163,50 @@ function Topbar({ title, onMenuClick }) {
 
         <button
           onClick={() => navigate("/notifications")}
-          className="relative p-2 rounded-sm hover:bg-mist-100 text-ink-700"
-          aria-label="Notifications"
+          className={`cb-bell-btn ${slaUnread > 0 ? "has-unread" : ""}`}
+          aria-label={t("Notifications")}
         >
-          <Bell size={19} />
+          <Bell size={23} strokeWidth={1.9} />
           {slaUnread > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-signal-red text-white text-[10px] font-bold grid place-items-center">
+            <span className="cb-badge">
               {slaUnread > 99 ? "99+" : slaUnread}
             </span>
           )}
         </button>
 
+        <span
+          className="hidden sm:block h-9 w-px bg-mist-200"
+          aria-hidden="true"
+        />
+
         <div className="relative" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
-            className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-md hover:bg-mist-100"
+            className="cb-user-pill"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
           >
-            <div className="w-8 h-8 rounded-full bg-ink-800 text-white text-xs font-semibold flex items-center justify-center">
+            <div className="cb-avatar">
               {initials}
+              <span className="cb-dot" />
             </div>
-            <div className="hidden sm:block text-left leading-tight">
-              <div className="text-sm font-medium text-ink-900 capitalize">
+            <div className="hidden sm:block text-left leading-tight min-w-0">
+              <div className="text-[15px] font-bold text-ink-900 capitalize truncate max-w-[150px]">
                 {displayName}
               </div>
-              <div className="text-[11px] text-ink-600/50">{t("Admin")}</div>
+              <div className="mt-0.5 flex items-center gap-1 text-[13px] font-medium text-ink-600/60">
+                <Icons.ShieldCheck size={14} />
+                {t(user?.role || "Admin")}
+              </div>
             </div>
             <ChevronDown
-              size={15}
-              className="text-ink-600/50 hidden sm:block"
+              size={18}
+              className={`ml-1 text-ink-600/60 hidden sm:block transition-transform duration-200 ${menuOpen ? "rotate-180" : ""}`}
             />
           </button>
 
           {menuOpen && (
-            <div className="absolute right-0 mt-2 w-60 bg-white border border-mist-200 rounded-md shadow-lg py-1.5 z-50">
+            <div className="absolute right-0 mt-3 w-64 bg-white border border-mist-200 rounded-2xl shadow-xl py-1.5 z-50 cb-fade-in">
               <div className="px-3.5 py-2 border-b border-mist-100">
                 <div className="text-sm font-medium text-ink-900 truncate">
                   {displayName}
@@ -14054,10 +14128,253 @@ const DOT = {
   ink: "bg-ink-600",
 };
 
+// ------------------------------------------------------------
+// Dashboard · AIR (Indonesia → Cambodia)
+// Live counts from the AIR module (air_orders), shown next to the China
+// pipeline so staff see BOTH sources on the same dashboard.
+// ------------------------------------------------------------
+function useAirDashboardRows() {
+  const [rows, setRows] = useState([]);
+  const [ready, setReady] = useState(false);
+  const load = React.useCallback(async () => {
+    try {
+      if (!supabase) {
+        setRows(airOrderLocalRows().map(normalizeAirRow));
+      } else {
+        const { data } = await supabase
+          .from("air_orders")
+          .select(
+            "id, order_id, customer, shop_name, tk, status, created_at, updated_at",
+          )
+          .order("updated_at", { ascending: false })
+          .limit(5000);
+        setRows((data || []).map(normalizeAirRow));
+      }
+    } catch {
+      setRows([]);
+    }
+    setReady(true);
+  }, []);
+  useEffect(() => {
+    load();
+    const onVis = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVis);
+    const t = setInterval(load, 60000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(t);
+    };
+  }, [load]);
+  return { rows, ready, reload: load };
+}
+
+function AirDashboardSection() {
+  const navigate = useNavigate();
+  const { rows, ready } = useAirDashboardRows();
+  const stages = AIR_ORDER_STATUS_FLOW.filter((x) => x !== "Complete Order");
+  const countOf = (label) =>
+    rows.filter((r) => canonicalAirStatus(r.status) === label).length;
+  const counts = stages.reduce((a, l) => ((a[l] = countOf(l)), a), {});
+  const completed = countOf("Complete Order");
+  const refunded = countOf(AIR_ORDER_TERMINAL);
+
+  let activeIndex = 0;
+  for (let i = stages.length - 1; i >= 0; i--) {
+    if (counts[stages[i]] > 0) {
+      activeIndex = i;
+      break;
+    }
+  }
+  const stageShort = {
+    "Order Processing": "Order Processing",
+    "In Transit": "In Transit",
+    "Received at Indonesia Warehouse": "Received at Indonesia WH",
+    "Departed Indonesia Warehouse": "Departed Indonesia WH",
+    "Received at Cambodia Warehouse": "Received at Cambodia WH",
+  };
+
+  const stats = [
+    {
+      icon: "Plane",
+      label: "AIR Orders (total)",
+      value: String(rows.length),
+      tone: "blue",
+    },
+    {
+      icon: "PlaneTakeoff",
+      label: "In Transit",
+      value: String(counts["In Transit"] || 0),
+      tone: "amber",
+    },
+    {
+      icon: "Warehouse",
+      label: "In Indonesia WH",
+      value: String(
+        (counts["Received at Indonesia Warehouse"] || 0) +
+          (counts["Departed Indonesia Warehouse"] || 0),
+      ),
+      tone: "violet",
+    },
+    {
+      icon: "PackageCheck",
+      label: "At Cambodia WH",
+      value: String(counts["Received at Cambodia Warehouse"] || 0),
+      tone: "teal",
+    },
+    {
+      icon: "RotateCcw",
+      label: "Refund Orders",
+      value: String(refunded),
+      tone: "red",
+    },
+  ];
+
+  const recent = [...rows]
+    .sort(
+      (a, b) =>
+        new Date(b.updated_at || b.created_at || 0) -
+        new Date(a.updated_at || a.created_at || 0),
+    )
+    .slice(0, 5);
+
+  return (
+    <div className="space-y-4">
+      <div className="cb-route p-5 lg:p-6 overflow-x-auto">
+        <div className="flex items-center justify-between mb-5 gap-3 flex-wrap">
+          <div>
+            <div className="text-white font-display font-bold text-base flex items-center gap-2">
+              <Icons.Plane size={17} /> Indonesia → Cambodia AIR Pipeline
+            </div>
+            <div className="text-mist-100/45 text-xs mt-0.5">
+              Independent AIR shipment lifecycle
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2.5 py-1 rounded-sm bg-signal-teal/15 text-signal-teal font-medium">
+              Complete Order — {completed}
+            </span>
+            <span className="px-2.5 py-1 rounded-sm bg-signal-red/15 text-red-300 font-medium">
+              Refund — {refunded}
+            </span>
+            <button
+              type="button"
+              onClick={() => navigate("/air-shipments")}
+              className="px-2.5 py-1 rounded-sm bg-white/10 text-white hover:bg-white/15 font-medium"
+            >
+              View AIR
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center min-w-[720px]">
+          {stages.map((label, i) => {
+            const state =
+              i < activeIndex
+                ? "done"
+                : i === activeIndex
+                  ? "active"
+                  : "pending";
+            return (
+              <div
+                key={label}
+                className="flex items-center flex-1 last:flex-none"
+              >
+                <div className="flex flex-col items-center gap-2 w-28 shrink-0">
+                  <div
+                    className={`w-10 h-10 rounded-full border-2 flex items-center justify-center text-sm font-semibold tabular-nums ${STATE_STYLE[state]}`}
+                  >
+                    {ready ? counts[label] : "–"}
+                  </div>
+                  <span className="text-[11px] text-center leading-tight text-mist-100/70">
+                    {stageShort[label]}
+                  </span>
+                </div>
+                {i < stages.length - 1 && (
+                  <div
+                    className={`h-0.5 flex-1 rounded-full ${state === "done" ? "bg-signal-teal" : "bg-white/10"}`}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {ready ? (
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 cb-fade-in">
+          {stats.map((st) => (
+            <StatCard key={st.label} {...st} />
+          ))}
+        </div>
+      ) : (
+        <StatCardsSkeleton
+          count={5}
+          className="grid grid-cols-2 lg:grid-cols-5 gap-3"
+        />
+      )}
+
+      <div className="bg-white border border-mist-200 rounded-md shadow-panel">
+        <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
+          <h2 className="font-display font-bold text-sm text-ink-900">
+            Recent AIR Activity
+          </h2>
+          <button
+            onClick={() => navigate("/air-shipments")}
+            className="text-xs font-medium text-signal-blue hover:underline"
+          >
+            View all
+          </button>
+        </div>
+        {!ready ? (
+          <SkeletonListRows rows={3} />
+        ) : recent.length === 0 ? (
+          <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
+            No AIR orders yet.
+          </p>
+        ) : (
+          <div className="divide-y divide-mist-100 cb-fade-in">
+            {recent.map((r) => (
+              <div
+                key={r.id || r.order_id}
+                className="flex items-center gap-3 px-4 lg:px-5 py-3"
+              >
+                <span className="w-2 h-2 rounded-full shrink-0 bg-violet-500" />
+                <div className="min-w-0 flex-1">
+                  <Link
+                    to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+                    className="text-sm font-medium text-ink-900 hover:text-signal-blue truncate block"
+                  >
+                    {r.order_id}
+                  </Link>
+                  <div className="text-xs text-ink-600/55 truncate">
+                    {r.customer || "—"}
+                    {r.shop_name ? ` · ${r.shop_name}` : ""}
+                  </div>
+                </div>
+                <div className="hidden sm:block">
+                  <AirStatusBadge status={r.status} />
+                </div>
+                <div className="text-xs text-ink-600/40 shrink-0 w-16 text-right">
+                  {timeAgoLabel(r.updated_at || r.created_at)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Dashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const { packages, ready: dashReady } = usePackageTracking();
   const today = new Date();
+  // Which parts of the dashboard this role may see (Role Management →
+  // Dashboard). A staff member who only works Indonesia sees only AIR, and
+  // vice-versa. Super Admin sees everything.
+  const showChina = hasPermission(user, "dashboard.china");
+  const showAir = hasPermission(user, "dashboard.air");
 
   const stats = [
     {
@@ -14114,120 +14431,141 @@ function Dashboard() {
 
   return (
     <div className="space-y-5">
-      <RouteFlow />
-
-      {dashReady ? (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 cb-fade-in">
-          {stats.map((s) => (
-            <StatCard key={s.label} {...s} />
-          ))}
+      {!showChina && !showAir && (
+        <div className="cb-surface p-8 text-center">
+          <Icons.LayoutDashboard
+            size={28}
+            className="mx-auto text-ink-600/25 mb-3"
+          />
+          <p className="font-medium text-ink-800">
+            No dashboard sections are assigned to your role.
+          </p>
+          <p className="text-sm text-ink-600/50 mt-1">
+            Ask an administrator to enable “Dashboard · China” or “Dashboard ·
+            AIR” in Role Management.
+          </p>
         </div>
-      ) : (
-        <StatCardsSkeleton
-          count={5}
-          className="grid grid-cols-2 lg:grid-cols-5 gap-3"
-        />
       )}
 
-      <SlaDashboardSection />
+      {showChina && <RouteFlow />}
 
-      <div className="grid lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 bg-white border border-mist-200 rounded-md shadow-panel">
-          <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
-            <h2 className="font-display font-bold text-sm text-ink-900">
-              Recent Activity
-            </h2>
-            <button
-              onClick={() => navigate("/packages")}
-              className="text-xs font-medium text-signal-blue hover:underline"
-            >
-              View all
-            </button>
+      {showChina &&
+        (dashReady ? (
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 cb-fade-in">
+            {stats.map((s) => (
+              <StatCard key={s.label} {...s} />
+            ))}
           </div>
-          {!dashReady ? (
-            <SkeletonListRows rows={5} />
-          ) : recent.length === 0 ? (
-            <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
-              No recent activity yet.
-            </p>
-          ) : (
-            <div className="divide-y divide-mist-100 cb-fade-in">
-              {recent.map((p) => (
-                <div
-                  key={p.tk}
-                  className="flex items-center gap-3 px-4 lg:px-5 py-3"
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${DOT[statusTone(p)]}`}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <Link
-                      to={`/packages/${p.tk}`}
-                      className="text-sm font-medium text-ink-900 hover:text-signal-blue truncate block"
-                    >
-                      {p.tk}
-                    </Link>
-                    <div className="text-xs text-ink-600/55 truncate">
-                      {packageCustomerLabel(p)}
+        ) : (
+          <StatCardsSkeleton
+            count={5}
+            className="grid grid-cols-2 lg:grid-cols-5 gap-3"
+          />
+        ))}
+
+      {showAir && <AirDashboardSection />}
+
+      {showChina && <SlaDashboardSection />}
+
+      {showChina && (
+        <div className="grid lg:grid-cols-3 gap-5">
+          <div className="lg:col-span-2 bg-white border border-mist-200 rounded-md shadow-panel">
+            <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
+              <h2 className="font-display font-bold text-sm text-ink-900">
+                Recent Activity
+              </h2>
+              <button
+                onClick={() => navigate("/packages")}
+                className="text-xs font-medium text-signal-blue hover:underline"
+              >
+                View all
+              </button>
+            </div>
+            {!dashReady ? (
+              <SkeletonListRows rows={5} />
+            ) : recent.length === 0 ? (
+              <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
+                No recent activity yet.
+              </p>
+            ) : (
+              <div className="divide-y divide-mist-100 cb-fade-in">
+                {recent.map((p) => (
+                  <div
+                    key={p.tk}
+                    className="flex items-center gap-3 px-4 lg:px-5 py-3"
+                  >
+                    <span
+                      className={`w-2 h-2 rounded-full shrink-0 ${DOT[statusTone(p)]}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <Link
+                        to={`/packages/${p.tk}`}
+                        className="text-sm font-medium text-ink-900 hover:text-signal-blue truncate block"
+                      >
+                        {p.tk}
+                      </Link>
+                      <div className="text-xs text-ink-600/55 truncate">
+                        {packageCustomerLabel(p)}
+                      </div>
+                    </div>
+                    <div className="text-xs text-ink-700 font-medium hidden sm:block">
+                      {p.status || "—"}
+                    </div>
+                    <div className="text-xs text-ink-600/40 shrink-0 w-16 text-right">
+                      {timeAgoLabel(lastActivityAt(p))}
                     </div>
                   </div>
-                  <div className="text-xs text-ink-700 font-medium hidden sm:block">
-                    {p.status || "—"}
-                  </div>
-                  <div className="text-xs text-ink-600/40 shrink-0 w-16 text-right">
-                    {timeAgoLabel(lastActivityAt(p))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div className="cb-surface cb-card">
-          <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
-            <h2 className="font-display font-bold text-sm text-ink-900">
-              Exception Alerts
-            </h2>
-            <TriangleAlert size={16} className="text-signal-red" />
-          </div>
-          {!dashReady ? (
-            <SkeletonListRows rows={3} />
-          ) : exceptions.length === 0 ? (
-            <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
-              No open exceptions.
-            </p>
-          ) : (
-            <div className="divide-y divide-mist-100 cb-fade-in">
-              {exceptions.map((p) => (
-                <div key={p.tk} className="px-4 lg:px-5 py-3">
-                  <div className="flex items-center justify-between">
-                    <Link
-                      to={`/packages/${p.tk}`}
-                      className="text-sm font-medium text-ink-900 hover:text-signal-blue"
-                    >
-                      {p.tk}
-                    </Link>
-                    <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-sm bg-signal-red/10 text-signal-red">
-                      {p.exception.type}
-                    </span>
-                  </div>
-                  <div className="text-xs text-ink-600/55 mt-0.5">
-                    {p.exception.detail || packageCustomerLabel(p)}
-                  </div>
-                </div>
-              ))}
+          <div className="cb-surface cb-card">
+            <div className="flex items-center justify-between px-4 lg:px-5 py-3.5 border-b border-mist-200">
+              <h2 className="font-display font-bold text-sm text-ink-900">
+                Exception Alerts
+              </h2>
+              <TriangleAlert size={16} className="text-signal-red" />
             </div>
-          )}
-          <div className="px-4 lg:px-5 py-3 border-t border-mist-200">
-            <button
-              onClick={() => navigate("/exceptions")}
-              className="w-full text-xs font-medium text-center text-signal-blue hover:underline"
-            >
-              Open Exception Center
-            </button>
+            {!dashReady ? (
+              <SkeletonListRows rows={3} />
+            ) : exceptions.length === 0 ? (
+              <p className="text-sm text-ink-600/45 px-4 lg:px-5 py-6 text-center">
+                No open exceptions.
+              </p>
+            ) : (
+              <div className="divide-y divide-mist-100 cb-fade-in">
+                {exceptions.map((p) => (
+                  <div key={p.tk} className="px-4 lg:px-5 py-3">
+                    <div className="flex items-center justify-between">
+                      <Link
+                        to={`/packages/${p.tk}`}
+                        className="text-sm font-medium text-ink-900 hover:text-signal-blue"
+                      >
+                        {p.tk}
+                      </Link>
+                      <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-sm bg-signal-red/10 text-signal-red">
+                        {p.exception.type}
+                      </span>
+                    </div>
+                    <div className="text-xs text-ink-600/55 mt-0.5">
+                      {p.exception.detail || packageCustomerLabel(p)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="px-4 lg:px-5 py-3 border-t border-mist-200">
+              <button
+                onClick={() => navigate("/exceptions")}
+                className="w-full text-xs font-medium text-center text-signal-blue hover:underline"
+              >
+                Open Exception Center
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -14269,8 +14607,47 @@ function customerIdOf(pkg) {
     .trim();
 }
 
+// ------------------------------------------------------------
+// Shipment Lookup helpers: one result list for BOTH sources
+//   • China  → packages  (TK, Land / Sea)
+//   • Indonesia → air_orders (AIR Shipments)
+// ------------------------------------------------------------
+function OriginBadge({ origin }) {
+  const indo = origin === "Indonesia";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${indo ? "bg-violet-50 text-violet-700" : "bg-red-50 text-red-700"}`}
+    >
+      {indo ? <Icons.Plane size={12} /> : <Icons.Ship size={12} />}
+      {origin}
+    </span>
+  );
+}
+function normalizeAirLookupRow(r) {
+  const a = normalizeAirRow(r);
+  return {
+    ...a,
+    source: "AIR",
+    order_display: a.order_id || "—",
+    tk_display: a.tk || "—",
+    product_display: a.product_name || "—",
+    shop_display: a.shop_name || "",
+    warehouse_display: a.dest_branch_code || "—",
+    shipping_method_display: "AIR",
+    status_display: a.status || "—",
+    customer_display: a.customer || "—",
+    customer_code_display:
+      String(a.customer || "")
+        .split(" · ")[0]
+        .trim() || "—",
+  };
+}
+const lookupOriginOf = (row) => (row.source === "AIR" ? "Indonesia" : "China");
+
 function ShipmentLookup() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const canAir = hasPermission(user, "air_order.view");
   const [searchParams] = useSearchParams();
   const { packages } = usePackageTracking();
   const [searchValue, setSearchValue] = useState(searchParams.get("q") || "");
@@ -14278,6 +14655,7 @@ function ShipmentLookup() {
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [originFilter, setOriginFilter] = useState(""); // "" | "China" | "Indonesia"
 
   const normalize = React.useCallback(
     (pkg, containerMap, warehouseMap, orderMap) => {
@@ -14293,6 +14671,7 @@ function ShipmentLookup() {
         warehouseMap[String(branchCode).trim().toLowerCase()] || null;
       return {
         ...pkg,
+        source: "CHINA",
         order_display: pkg.order_no || order?.order_no || pkg.order_id || "—",
         tk_display: pkg.tk || "—",
         product_display: pkg.product_name || pkg.cargo_type || "—",
@@ -14334,6 +14713,7 @@ function ShipmentLookup() {
     setSearched(true);
     setError("");
     setRows([]);
+    setOriginFilter("");
 
     try {
       // Search the live package/order/warehouse/container sources in parallel.
@@ -14456,11 +14836,48 @@ function ShipmentLookup() {
           }
         }
 
-        setRows(
-          matchedPackages.map((pkg) =>
-            normalize(pkg, containerMap, warehouseMap, orderMap),
-          ),
+        const chinaRows = matchedPackages.map((pkg) =>
+          normalize(pkg, containerMap, warehouseMap, orderMap),
         );
+
+        // AIR (Indonesia): search air_orders by Shop Order ID, TK, customer
+        // label (code + name), shop, product, and by matched customer ids.
+        // A failure here (e.g. table missing) must never break the China search.
+        let airRows = [];
+        try {
+          if (!canAir) throw new Error("no-air-permission");
+          const qa = q.replace(/[,()]/g, " ").trim();
+          const airCalls = [
+            supabase
+              .from("air_orders")
+              .select("*")
+              .or(
+                `order_id.ilike.%${qa}%,tk.ilike.%${qa}%,customer.ilike.%${qa}%,shop_name.ilike.%${qa}%,product_name.ilike.%${qa}%`,
+              )
+              .order("created_at", { ascending: false })
+              .limit(500),
+          ];
+          if (customerIds.length) {
+            airCalls.push(
+              supabase
+                .from("air_orders")
+                .select("*")
+                .in("customer_id", customerIds.slice(0, 100))
+                .order("created_at", { ascending: false })
+                .limit(500),
+            );
+          }
+          const airRes = await Promise.all(airCalls);
+          const byId = new Map();
+          airRes.forEach((r) =>
+            (r.data || []).forEach((x) => byId.set(String(x.id), x)),
+          );
+          airRows = [...byId.values()].map(normalizeAirLookupRow);
+        } catch (airErr) {
+          if (airErr?.message !== "no-air-permission")
+            console.warn("[shipment-lookup] AIR search skipped", airErr);
+        }
+        setRows([...chinaRows, ...airRows]);
       } else {
         // UI-only fallback: keep the existing local package registry working.
         const upper = query.toUpperCase();
@@ -14479,7 +14896,27 @@ function ShipmentLookup() {
             .toUpperCase();
           return haystack.includes(upper);
         });
-        setRows(matches.map((pkg) => normalize(pkg, {}, {}, {})));
+        const airMatches = (canAir ? airOrderLocalRows() : [])
+          .map(normalizeAirRow)
+          .filter((r) =>
+            [
+              r.order_id,
+              r.tk,
+              r.customer,
+              r.customer_id,
+              r.shop_name,
+              r.product_name,
+            ]
+              .filter(Boolean)
+              .join(" ")
+              .toUpperCase()
+              .includes(upper),
+          )
+          .map(normalizeAirLookupRow);
+        setRows([
+          ...matches.map((pkg) => normalize(pkg, {}, {}, {})),
+          ...airMatches,
+        ]);
       }
     } catch (err) {
       console.error("[shipment-lookup] search failed", err);
@@ -14501,6 +14938,13 @@ function ShipmentLookup() {
 
   const handleSearch = () => runSearch(searchValue);
   const noResults = searched && !loading && !error && rows.length === 0;
+  const visibleRows = originFilter
+    ? rows.filter((r) => lookupOriginOf(r) === originFilter)
+    : rows;
+  const originCounts = {
+    China: rows.filter((r) => lookupOriginOf(r) === "China").length,
+    Indonesia: rows.filter((r) => lookupOriginOf(r) === "Indonesia").length,
+  };
 
   const SkeletonRow = () => (
     <div className="animate-pulse grid grid-cols-[1.05fr_1.15fr_1.25fr_1.6fr_1.35fr_1.1fr_1fr] gap-4 items-center px-5 py-4 border-t border-mist-100">
@@ -14521,7 +14965,8 @@ function ShipmentLookup() {
         </h1>
         <p className="text-sm text-ink-600/55 mt-1">
           Search Customer ID, TK, Order ID, customer name, or Shipment ID and
-          view the related orders and packages.
+          view the related orders and packages — China (Land / Sea) and
+          Indonesia (AIR).
         </p>
       </div>
 
@@ -14597,17 +15042,37 @@ function ShipmentLookup() {
               </h2>
             </div>
             <div className="px-3 py-1.5 rounded-full bg-signal-blue/8 text-signal-blue text-sm font-semibold">
-              {rows.length} results
+              {visibleRows.length} results
             </div>
           </div>
 
+          {canAir && (
+            <div className="flex flex-wrap gap-2">
+              {[
+                ["", "All", rows.length],
+                ["China", "China · Land / Sea", originCounts.China],
+                ["Indonesia", "Indonesia · AIR", originCounts.Indonesia],
+              ].map(([k, label, n]) => (
+                <button
+                  key={k || "all"}
+                  type="button"
+                  onClick={() => setOriginFilter(k)}
+                  className={`rounded-full border px-3.5 py-1.5 text-xs font-bold transition ${originFilter === k ? "border-signal-blue bg-signal-blue text-white" : "border-mist-200 bg-white text-ink-700 hover:bg-mist-50"}`}
+                >
+                  {label} <span className="opacity-70">{n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="cb-surface cb-card overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1250px] text-sm">
+              <table className="w-full min-w-[1350px] text-sm">
                 <thead>
                   <tr className="bg-mist-50 border-b border-mist-200 text-left">
                     {[
                       "Order ID",
+                      "Origin",
                       "Tracking Number",
                       "Product",
                       "Customer",
@@ -14625,23 +15090,45 @@ function ShipmentLookup() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, index) => (
+                  {visibleRows.map((row, index) => (
                     <tr
-                      key={`${row.tk}-${index}`}
+                      key={`${row.source || "CHINA"}-${row.id || row.tk}-${index}`}
                       className="border-b border-mist-100 last:border-b-0 hover:bg-mist-50/60 transition"
                     >
                       <td className="px-5 py-4 whitespace-nowrap">
-                        <div className="font-semibold text-ink-900">
-                          {row.order_display}
-                        </div>
+                        {row.source === "AIR" ? (
+                          <button
+                            onClick={() =>
+                              navigate(
+                                `/air-shipments/${encodeURIComponent(row.order_id)}`,
+                              )
+                            }
+                            className="font-semibold text-ink-900 hover:text-signal-blue hover:underline"
+                          >
+                            {row.order_display}
+                          </button>
+                        ) : (
+                          <div className="font-semibold text-ink-900">
+                            {row.order_display}
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-4 whitespace-nowrap">
-                        <button
-                          onClick={() => navigate(`/packages/${row.tk}`)}
-                          className="font-semibold text-signal-blue hover:underline"
-                        >
-                          {row.tk_display}
-                        </button>
+                        <OriginBadge origin={lookupOriginOf(row)} />
+                      </td>
+                      <td className="px-5 py-4 whitespace-nowrap">
+                        {row.source === "AIR" ? (
+                          <span className="font-semibold text-signal-blue">
+                            {row.tk_display}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => navigate(`/packages/${row.tk}`)}
+                            className="font-semibold text-signal-blue hover:underline"
+                          >
+                            {row.tk_display}
+                          </button>
+                        )}
                       </td>
                       <td className="px-5 py-4 max-w-[220px]">
                         <div
@@ -14651,7 +15138,11 @@ function ShipmentLookup() {
                           {row.product_display}
                         </div>
                         <div className="text-xs text-ink-600/45 mt-0.5">
-                          {row.cargo_type || row.package_type || "Package"}
+                          {row.source === "AIR"
+                            ? row.shop_display
+                              ? `Shop: ${row.shop_display}`
+                              : "AIR Order"
+                            : row.cargo_type || row.package_type || "Package"}
                         </div>
                       </td>
                       <td className="px-5 py-4 max-w-[210px]">
@@ -14682,9 +15173,13 @@ function ShipmentLookup() {
                         </span>
                       </td>
                       <td className="px-5 py-4 whitespace-nowrap">
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-signal-blue/8 text-signal-blue font-semibold text-xs">
-                          {row.status_display}
-                        </span>
+                        {row.source === "AIR" ? (
+                          <AirStatusBadge status={row.status_display} />
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-signal-blue/8 text-signal-blue font-semibold text-xs">
+                            {row.status_display}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -26696,6 +27191,13 @@ function RoleManagementPage() {
           ALL_PERMISSION_KEYS.forEach((k) => {
             if (k.split(".")[0] === prefix) set.delete(k);
           });
+        // Dashboard: with neither China nor AIR left, there is nothing to show.
+        if (
+          (key === "dashboard.china" || key === "dashboard.air") &&
+          !set.has("dashboard.china") &&
+          !set.has("dashboard.air")
+        )
+          set.delete("dashboard.view");
       } else {
         set.add(key);
         if (PERMISSION_LABEL[`${prefix}.view`]) set.add(`${prefix}.view`);
@@ -28987,6 +29489,67 @@ function GlobalConfirmHost() {
 
   if (!req) return null;
   const danger = req.tone !== "primary";
+  if (req.variant === "signout") {
+    return (
+      <div
+        className="fixed inset-0 z-[200] bg-slate-900/45 backdrop-blur-[3px] flex items-center justify-center p-4"
+        onClick={() => close(false)}
+        role="presentation"
+      >
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="cb-confirm-title"
+          onClick={(e) => e.stopPropagation()}
+          className="cb-confirm-card cb-fade-in relative w-full max-w-[460px] rounded-2xl bg-white p-6 shadow-[0_30px_70px_-20px_rgba(15,23,42,.45)]"
+        >
+          <button
+            type="button"
+            onClick={() => close(false)}
+            aria-label="Close"
+            className="cb-confirm-x absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
+          >
+            <Icons.X size={20} />
+          </button>
+          <div className="flex items-start gap-4 pr-6">
+            <div className="cb-confirm-icon-danger grid h-12 w-12 shrink-0 place-items-center rounded-full bg-red-100 text-red-600">
+              <Icons.LogOut size={22} />
+            </div>
+            <div className="min-w-0 pt-0.5">
+              <h3
+                id="cb-confirm-title"
+                className="text-lg font-bold text-slate-900 leading-tight"
+              >
+                {req.title}
+              </h3>
+              {req.message && (
+                <p className="mt-1.5 text-[15px] text-slate-500">
+                  {req.message}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="mt-6 flex justify-end gap-3">
+            <button
+              type="button"
+              autoFocus
+              onClick={() => close(false)}
+              className="cb-confirm-cancel h-11 min-w-[96px] rounded-lg border border-slate-200 bg-white px-5 text-[15px] font-semibold text-slate-800 shadow-sm hover:bg-slate-50 transition-colors"
+            >
+              {req.cancelText || "Cancel"}
+            </button>
+            <button
+              type="button"
+              onClick={() => close(true)}
+              className="h-11 min-w-[104px] rounded-lg bg-red-600 px-5 text-[15px] font-bold text-white shadow-[0_8px_18px_-8px_rgba(220,38,38,.8)] hover:bg-red-700 active:scale-[.98] transition"
+            >
+              {req.confirmText || "Confirm"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div
       className="fixed inset-0 z-[200] bg-slate-950/45 backdrop-blur-sm flex items-center justify-center p-4"
@@ -35557,6 +36120,8 @@ function CustomerDetailPage() {
   const [editAddress, setEditAddress] = useState(null);
   const [routeModal, setRouteModal] = useState(false);
   const [reload, setReload] = useState(0);
+  const canViewAir = hasPermission(user, "air_order.view");
+  const [airRows, setAirRows] = useState([]); // AIR (Indonesia) orders of this customer
   const [state, setState] = useState({
     loading: true,
     cust: null,
@@ -35602,7 +36167,7 @@ function CustomerDetailPage() {
         });
         return;
       }
-      const [p, a, t] = await Promise.all([
+      const [p, a, t, ar] = await Promise.all([
         supabase
           .from("packages")
           .select("*")
@@ -35620,8 +36185,17 @@ function CustomerDetailPage() {
           .eq("customer_id", String(cust.id))
           .order("created_at", { ascending: false })
           .limit(500),
+        canViewAir
+          ? supabase
+              .from("air_orders")
+              .select("*")
+              .eq("customer_id", cust.id)
+              .order("created_at", { ascending: false })
+              .limit(2000)
+          : Promise.resolve({ data: [] }),
       ]);
       if (!alive) return;
+      setAirRows(ar?.data || []);
       setState({
         loading: false,
         cust,
@@ -35660,6 +36234,7 @@ function CustomerDetailPage() {
 
   const done = packages.filter((p) => p.status === "Completed").length;
   const active = packages.length - done;
+  const airList = airRows.map(normalizeAirRow);
   const defAddr = addrs.find((a) => a.is_default) || addrs[0];
   const whLabel = (c) =>
     c
@@ -35721,6 +36296,62 @@ function CustomerDetailPage() {
       label: "Status",
       search: (r) => pkgDisplayStatus(r),
       render: (r) => <StatusBadge label={pkgDisplayStatus(r) || "—"} />,
+    },
+  ];
+  const airCols = [
+    {
+      key: "updated",
+      label: "Last Update",
+      search: () => "",
+      render: (r) => (
+        <div>
+          <div className="font-semibold text-slate-800">
+            {cdDate(r.updated_at || r.created_at)}
+          </div>
+          <div className="text-[11px] text-slate-400">
+            {cdAgo(r.updated_at || r.created_at)}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "order_id",
+      label: "Shop Order ID",
+      render: (r) => (
+        <Link
+          to={`/air-shipments/${encodeURIComponent(r.order_id)}`}
+          className="font-semibold text-blue-700 hover:underline"
+        >
+          {r.order_id}
+        </Link>
+      ),
+    },
+    {
+      key: "tk",
+      label: "Tracking Number",
+      render: (r) => r.tk || "—",
+    },
+    {
+      key: "shop_name",
+      label: "Shop",
+      render: (r) => r.shop_name || "—",
+    },
+    {
+      key: "product_name",
+      label: "Product",
+      render: (r) => r.product_name || "—",
+    },
+    {
+      key: "origin",
+      label: "Origin",
+      search: () => "Indonesia",
+      render: () => <OriginBadge origin="Indonesia" />,
+    },
+    {
+      key: "status",
+      label: "Status",
+      search: (r) => r.status,
+      render: (r) => <AirStatusBadge status={r.status} />,
     },
   ];
   const txCols = [
@@ -35860,6 +36491,7 @@ function CustomerDetailPage() {
 
   const tabs = [
     ["packages", "Packages / TK", packages.length],
+    ...(canViewAir ? [["air", "AIR · Indonesia", airList.length]] : []),
     ["transactions", "Transactions", tx.length],
     ["addresses", "Addresses", addrs.length],
   ];
@@ -36001,6 +36633,13 @@ function CustomerDetailPage() {
               tone={Number(cust.balance) < 0 ? "text-red-600" : "text-blue-700"}
             />
             <CdStat label="Total TK" value={packages.length} />
+            {canViewAir && (
+              <CdStat
+                label="AIR Orders"
+                value={airList.length}
+                tone="text-violet-700"
+              />
+            )}
             <CdStat label="In Progress" value={active} tone="text-amber-600" />
             <CdStat label="Completed" value={done} tone="text-emerald-600" />
           </div>
@@ -36032,6 +36671,14 @@ function CustomerDetailPage() {
                 rows={packages}
                 stages={PACKAGE_STAGES}
                 empty="No packages yet."
+              />
+            )}
+            {tab === "air" && (
+              <CdTable
+                cols={airCols}
+                rows={airList}
+                stages={[...AIR_ORDER_STATUS_FLOW, AIR_ORDER_TERMINAL]}
+                empty="No AIR (Indonesia) orders yet."
               />
             )}
             {tab === "transactions" && (
@@ -36995,6 +37642,83 @@ function deliveryAddressText(a) {
     .join(", ");
 }
 
+// ------------------------------------------------------------
+// AIR (Indonesia) in Delivery.
+// An AIR order becomes requestable once it is "Received at Cambodia Warehouse"
+// — the same moment a China TK reaches "Inbound Warehouse". Both kinds can be
+// ticked in ONE delivery request. AIR rows are stored in delivery_items as
+// tk = "AIR:<Shop Order ID>" (no schema change needed) and, when the delivery
+// is marked Delivered, the AIR order moves to "Complete Order".
+// ------------------------------------------------------------
+const AIR_DELIVERY_PREFIX = "AIR:";
+const AIR_READY_STATUS = "Received at Cambodia Warehouse";
+const AIR_READY_RAW = [AIR_READY_STATUS, "Inbound WH KH"]; // "Inbound WH KH" = legacy label
+const isAirDeliveryItem = (tk) =>
+  String(tk || "").startsWith(AIR_DELIVERY_PREFIX);
+const airDeliveryKey = (orderId) => `${AIR_DELIVERY_PREFIX}${orderId}`;
+const deliveryItemLabel = (tk) =>
+  isAirDeliveryItem(tk) ? String(tk).slice(AIR_DELIVERY_PREFIX.length) : tk;
+
+async function fetchAirReadyForDelivery(customerUuid, customerCode) {
+  try {
+    if (!supabase) {
+      const code = String(customerCode || "").toLowerCase();
+      return airOrderLocalRows()
+        .map(normalizeAirRow)
+        .filter(
+          (r) =>
+            canonicalAirStatus(r.status) === AIR_READY_STATUS &&
+            (String(r.customer_id || "").toLowerCase() === code ||
+              String(r.customer || "")
+                .split(" · ")[0]
+                .trim()
+                .toLowerCase() === code),
+        );
+    }
+    if (!customerUuid) return [];
+    const { data } = await supabase
+      .from("air_orders")
+      .select("*")
+      .eq("customer_id", customerUuid)
+      .in("status", AIR_READY_RAW)
+      .order("created_at", { ascending: false })
+      .limit(500);
+    return (data || []).map(normalizeAirRow);
+  } catch {
+    return [];
+  }
+}
+
+async function completeAirOrderByDelivery(orderId, by, note) {
+  const now = new Date().toISOString();
+  if (supabase) {
+    const { data: row } = await supabase
+      .from("air_orders")
+      .select("id")
+      .eq("order_id", orderId)
+      .maybeSingle();
+    if (row?.id) {
+      await supabase
+        .from("air_orders")
+        .update({ status: "Complete Order", updated_by: by, updated_at: now })
+        .eq("id", row.id);
+      await supabase.from("air_order_history").insert({
+        air_order_id: row.id,
+        status: "Complete Order",
+        created_by: by,
+        note,
+      });
+    }
+  }
+  airOrderLocalWrite(
+    airOrderLocalRows().map((r) =>
+      r.order_id === orderId
+        ? { ...r, status: "Complete Order", updated_by: by, updated_at: now }
+        : r,
+    ),
+  );
+}
+
 function useDeliveries() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -37154,9 +37878,26 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [addrModal, setAddrModal] = useState(false);
+  const [airReady, setAirReady] = useState([]); // AIR orders at Cambodia Warehouse
+
+  useEffect(() => {
+    if (!found) {
+      setAirReady([]);
+      return;
+    }
+    let alive = true;
+    fetchAirReadyForDelivery(
+      found.customer.uuid,
+      found.customer.customer_code,
+    ).then((r) => alive && setAirReady(r));
+    return () => {
+      alive = false;
+    };
+  }, [found]);
 
   useEffect(() => {
     if (!open) return;
+    setAirReady([]);
     setQuery("");
     setSearched(false);
     setFound(null);
@@ -37179,9 +37920,22 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
     );
   }, [found, packages]);
 
-  const selectable = customerTks.filter((p) => !activeTks.has(tkKey(p.tk)));
-  const chosen = selectable.filter((p) => picked[tkKey(p.tk)]);
-  const unpaid = chosen.reduce((s, p) => s + shippingFeeOf(p).due, 0);
+  // China TK (Inbound Warehouse) + AIR / Indonesia (Received at Cambodia
+  // Warehouse) share one list so a customer can request both together.
+  const chinaItems = customerTks.map((p) => ({
+    ...p,
+    _kind: "CHINA",
+    _key: tkKey(p.tk),
+  }));
+  const airItems = airReady.map((r) => ({
+    ...r,
+    _kind: "AIR",
+    _key: tkKey(airDeliveryKey(r.order_id)),
+  }));
+  const allItems = [...chinaItems, ...airItems];
+  const selectable = allItems.filter((i) => !activeTks.has(i._key));
+  const chosen = selectable.filter((i) => picked[i._key]);
+  const unpaid = chosen.reduce((s, i) => s + shippingFeeOf(i).due, 0);
   const deliveryFee = Number(fee) || 0;
   const cashToCollect = unpaid + (payType === "cod" ? deliveryFee : 0);
   const addr = (found?.addresses || []).find((a) => a.id === addrId);
@@ -37207,7 +37961,7 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
   async function submit() {
     setErr("");
     if (!found) return setErr("សូមស្វែងរក Customer សិន");
-    if (!chosen.length) return setErr("សូមជ្រើសរើស TK យ៉ាងតិច ១");
+    if (!chosen.length) return setErr("សូមជ្រើសរើស TK ឬ AIR Order យ៉ាងតិច ១");
     if (!addr) return setErr("សូមជ្រើសរើសអាសយដ្ឋានដឹកជញ្ជូន");
     setSaving(true);
     try {
@@ -37226,9 +37980,9 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
           cash_to_collect: Math.round(cashToCollect * 100) / 100,
           note: note.trim(),
         },
-        chosen.map((p) => ({
-          tk: p.tk,
-          fee_due: Math.round(shippingFeeOf(p).due * 100) / 100,
+        chosen.map((i) => ({
+          tk: i._kind === "AIR" ? airDeliveryKey(i.order_id) : i.tk,
+          fee_due: Math.round(shippingFeeOf(i).due * 100) / 100,
         })),
       );
       onClose();
@@ -37240,7 +37994,7 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
 
   if (!open) return null;
   const allOn =
-    selectable.length > 0 && selectable.every((p) => picked[tkKey(p.tk)]);
+    selectable.length > 0 && selectable.every((i) => picked[i._key]);
 
   return (
     <div
@@ -37299,7 +38053,8 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
 
           {!found && !searched && (
             <div className="text-center text-sm text-ink-600/55 border border-dashed border-mist-200 rounded-md py-10">
-              វាយ Customer ID ដើម្បីមើលទំនិញ Inbound Warehouse
+              វាយ Customer ID ដើម្បីមើលទំនិញ Inbound Warehouse (ចិន) និង AIR
+              (Indonesia)
             </div>
           )}
 
@@ -37371,7 +38126,7 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className={LABEL_CLS + " !mb-0"}>
-                    Inbound Warehouse ({customerTks.length})
+                    Ready for delivery ({allItems.length})
                   </label>
                   {selectable.length > 0 && (
                     <label className="text-xs flex items-center gap-1.5 cursor-pointer">
@@ -37382,7 +38137,7 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
                           setPicked(
                             e.target.checked
                               ? Object.fromEntries(
-                                  selectable.map((p) => [tkKey(p.tk), true]),
+                                  selectable.map((i) => [i._key, true]),
                                 )
                               : {},
                           )
@@ -37392,59 +38147,108 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
                     </label>
                   )}
                 </div>
-                {customerTks.length === 0 ? (
-                  <p className="text-sm text-ink-600/55 border border-dashed border-mist-200 rounded-md py-6 text-center">
-                    Customer នេះគ្មានទំនិញក្នុង Inbound Warehouse ទេ
+                {allItems.length === 0 ? (
+                  <p className="text-sm text-ink-600/55 border border-dashed border-mist-200 rounded-md py-6 text-center px-4">
+                    Customer នេះគ្មានទំនិញក្នុង Inbound Warehouse (ចិន) ឬ AIR
+                    ដែល Received at Cambodia Warehouse ទេ
                   </p>
                 ) : (
-                  <div className="border border-mist-200 rounded-md divide-y divide-mist-100">
-                    {customerTks.map((p) => {
-                      const locked = activeTks.has(tkKey(p.tk));
-                      const f = shippingFeeOf(p);
-                      return (
-                        <label
-                          key={p.tk}
-                          className={`flex items-center gap-3 px-3 py-2.5 ${locked ? "opacity-50" : "cursor-pointer hover:bg-mist-50"}`}
-                        >
-                          <input
-                            type="checkbox"
-                            disabled={locked}
-                            checked={!!picked[tkKey(p.tk)]}
-                            onChange={(e) =>
-                              setPicked((s) => ({
-                                ...s,
-                                [tkKey(p.tk)]: e.target.checked,
-                              }))
-                            }
-                          />
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-ink-900">
-                              {p.tk}
-                            </div>
-                            <div className="text-xs text-ink-600/55 truncate">
-                              {p.weight_kg ?? p.weight ?? "—"} KG ·{" "}
-                              {p.cbm ?? "—"} CBM
-                              {p.product_name ? ` · ${p.product_name}` : ""}
-                            </div>
+                  <div className="space-y-3">
+                    {[
+                      [
+                        "CHINA",
+                        "China · Land / Sea — Inbound Warehouse",
+                        chinaItems,
+                      ],
+                      [
+                        "AIR",
+                        "Indonesia · AIR — Received at Cambodia Warehouse",
+                        airItems,
+                      ],
+                    ]
+                      .filter(([, , list]) => list.length > 0)
+                      .map(([kind, title, list]) => (
+                        <div key={kind}>
+                          <div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-ink-600/55">
+                            <OriginBadge
+                              origin={kind === "AIR" ? "Indonesia" : "China"}
+                            />
+                            <span>
+                              {title} ({list.length})
+                            </span>
                           </div>
-                          <div className="text-right text-xs">
-                            {locked ? (
-                              <span className="text-signal-amber">
-                                In delivery
-                              </span>
-                            ) : f.state === "due" ? (
-                              <span className="font-semibold text-[#B87415]">
-                                Due {money(f.due)}
-                              </span>
-                            ) : f.state === "paid" ? (
-                              <span className="text-signal-teal">Paid</span>
-                            ) : (
-                              <span className="text-ink-600/40">—</span>
-                            )}
+                          <div className="border border-mist-200 rounded-md divide-y divide-mist-100">
+                            {list.map((i) => {
+                              const locked = activeTks.has(i._key);
+                              const f = shippingFeeOf(i);
+                              const isAir = i._kind === "AIR";
+                              return (
+                                <label
+                                  key={i._key}
+                                  className={`flex items-center gap-3 px-3 py-2.5 ${locked ? "opacity-50" : "cursor-pointer hover:bg-mist-50"}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    disabled={locked}
+                                    checked={!!picked[i._key]}
+                                    onChange={(e) =>
+                                      setPicked((st) => ({
+                                        ...st,
+                                        [i._key]: e.target.checked,
+                                      }))
+                                    }
+                                  />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-sm font-medium text-ink-900">
+                                      {isAir ? i.order_id : i.tk}
+                                      {isAir && i.tk ? (
+                                        <span className="ml-2 text-xs font-semibold text-signal-blue">
+                                          TK {i.tk}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <div className="text-xs text-ink-600/55 truncate">
+                                      {isAir ? (
+                                        <>
+                                          {i.shop_name || "AIR Order"}
+                                          {i.product_name
+                                            ? ` · ${i.product_name}`
+                                            : ""}
+                                        </>
+                                      ) : (
+                                        <>
+                                          {i.weight_kg ?? i.weight ?? "—"} KG ·{" "}
+                                          {i.cbm ?? "—"} CBM
+                                          {i.product_name
+                                            ? ` · ${i.product_name}`
+                                            : ""}
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="text-right text-xs">
+                                    {locked ? (
+                                      <span className="text-signal-amber">
+                                        In delivery
+                                      </span>
+                                    ) : f.state === "due" ? (
+                                      <span className="font-semibold text-[#B87415]">
+                                        Due {money(f.due)}
+                                      </span>
+                                    ) : f.state === "paid" ? (
+                                      <span className="text-signal-teal">
+                                        Paid
+                                      </span>
+                                    ) : (
+                                      <span className="text-ink-600/40">—</span>
+                                    )}
+                                  </div>
+                                </label>
+                              );
+                            })}
                           </div>
-                        </label>
-                      );
-                    })}
+                        </div>
+                      ))}
                   </div>
                 )}
               </div>
@@ -37500,7 +38304,7 @@ function RequestDeliveryDrawer({ open, onClose, activeTks, onSubmit }) {
         {found && (
           <div className="border-t border-mist-200 px-5 py-4 space-y-3">
             <div className="flex justify-between text-sm">
-              <span className="text-ink-600/70">Selected TK</span>
+              <span className="text-ink-600/70">Selected (TK + AIR)</span>
               <span className="font-medium">{chosen.length}</span>
             </div>
             <div className="flex justify-between text-sm">
@@ -37616,10 +38420,14 @@ function DeliveryDetailModal({ row, onClose }) {
           )}
           <div className="border border-mist-200 rounded-md divide-y divide-mist-100">
             {(row.items || []).map((i) => {
-              const p = findPackage(i.tk);
+              const air = isAirDeliveryItem(i.tk);
+              const p = air ? null : findPackage(i.tk);
               return (
                 <div key={i.tk} className="flex justify-between px-3 py-2">
-                  <span className="font-medium">{i.tk}</span>
+                  <span className="font-medium inline-flex items-center gap-2">
+                    {deliveryItemLabel(i.tk)}
+                    {air && <OriginBadge origin="Indonesia" />}
+                  </span>
                   <span className="text-xs text-ink-600/60">
                     {p ? `${p.weight_kg ?? p.weight ?? "—"} KG` : ""}{" "}
                     {Number(i.fee_due) > 0 ? `· Due ${money(i.fee_due)}` : ""}
@@ -38531,6 +39339,32 @@ function DeliveryPage() {
   const canEdit = hasPermission(user, "delivery.edit");
   const operator = user?.name || user?.email || "System";
 
+  // AIR orders sitting at the Cambodia Warehouse (waiting to be delivered).
+  const [airReadyAll, setAirReadyAll] = useState([]);
+  const loadAirReady = React.useCallback(async () => {
+    try {
+      if (!supabase) {
+        setAirReadyAll(
+          airOrderLocalRows()
+            .map(normalizeAirRow)
+            .filter((r) => canonicalAirStatus(r.status) === AIR_READY_STATUS),
+        );
+        return;
+      }
+      const { data } = await supabase
+        .from("air_orders")
+        .select("id, order_id")
+        .in("status", AIR_READY_RAW)
+        .limit(2000);
+      setAirReadyAll(data || []);
+    } catch {
+      /* AIR table optional — never block the Delivery page */
+    }
+  }, []);
+  useEffect(() => {
+    loadAirReady();
+  }, [loadAirReady, rows]);
+
   const activeTks = useMemo(() => {
     const s = new Set();
     rows
@@ -38576,8 +39410,11 @@ function DeliveryPage() {
     () =>
       packages.filter(
         (p) => p.status === "Inbound Warehouse" && !activeTks.has(tkKey(p.tk)),
+      ).length +
+      airReadyAll.filter(
+        (r) => !activeTks.has(tkKey(airDeliveryKey(r.order_id))),
       ).length,
-    [packages, activeTks],
+    [packages, activeTks, airReadyAll],
   );
 
   const shown = useMemo(() => {
@@ -38618,6 +39455,19 @@ function DeliveryPage() {
       delivered_at: new Date().toISOString(),
     });
     for (const i of row.items || []) {
+      if (isAirDeliveryItem(i.tk)) {
+        // AIR (Indonesia) order → Complete Order
+        try {
+          await completeAirOrderByDelivery(
+            deliveryItemLabel(i.tk),
+            operator,
+            `Delivered ${row.delivery_no}`,
+          );
+        } catch {
+          /* the delivery itself is already recorded */
+        }
+        continue;
+      }
       const values = { tk: i.tk, status: "Completed" };
       const p = packages.find((x) => tkKey(x.tk) === tkKey(i.tk));
       // Cash collected at the door settles the shipping fee.
@@ -39054,6 +39904,17 @@ body{background:var(--cb-bg);color:var(--cb-text);}
 .cb-route{background:linear-gradient(135deg,#0d2144 0%,#163764 55%,#1d4f91 100%);border-radius:18px!important;box-shadow:0 14px 36px rgba(15,31,61,.14);}
 .cb-page-title{letter-spacing:-.025em;}
 .cb-table-row:hover{background:#f8fbff;}
+.cb-bell-btn{position:relative;width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#f3f7fd;border:1px solid #e6edf7;color:#1e2a47;transition:background .15s,transform .15s,box-shadow .15s;}
+.cb-bell-btn:hover{background:#e9f0fb;}
+.cb-bell-btn:active{transform:scale(.96);}
+.cb-bell-btn.has-unread svg{animation:cb-bell-ring 2.6s ease-in-out infinite;transform-origin:50% 8%;}
+.cb-badge{position:absolute;top:-7px;right:-7px;min-width:24px;height:24px;padding:0 6px;border-radius:9999px;background:linear-gradient(135deg,#ff5a6a,#e11d48);color:#fff;font-size:12px;font-weight:800;line-height:1;display:grid;place-items:center;border:2.5px solid #fff;box-shadow:0 6px 14px -4px rgba(225,29,72,.7);}
+.cb-user-pill{display:flex;align-items:center;gap:12px;padding:6px 14px 6px 6px;border-radius:9999px;background:#f3f7fd;border:1px solid #e6edf7;transition:background .15s;}
+.cb-user-pill:hover{background:#e9f0fb;}
+.cb-avatar{position:relative;width:44px;height:44px;flex:none;border-radius:9999px;background:linear-gradient(145deg,#26385f,#162447);color:#fff;font-weight:700;font-size:15px;display:grid;place-items:center;box-shadow:0 0 0 4px rgba(59,130,246,.22);}
+.cb-dot{position:absolute;right:-2px;bottom:-2px;width:14px;height:14px;border-radius:9999px;background:#22c55e;border:2.5px solid #fff;}
+@keyframes cb-bell-ring{0%,60%,100%{transform:rotate(0)}66%{transform:rotate(14deg)}72%{transform:rotate(-12deg)}78%{transform:rotate(8deg)}84%{transform:rotate(-5deg)}90%{transform:rotate(0)}}
+@media (prefers-reduced-motion:reduce){.cb-bell-btn.has-unread svg{animation:none}}
 @media(max-width:1023px){.cb-sidebar{box-shadow:20px 0 60px rgba(15,31,61,.22);}}
 /* ---- shared login transition (Admin + Customer) ---- */
 .cb-auth-ov{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#1e40af 0%,#2563eb 52%,#38bdf8 100%);color:#fff;overflow:hidden;animation:cb-auth-fade .25s ease both;}
