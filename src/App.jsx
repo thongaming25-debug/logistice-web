@@ -31146,8 +31146,187 @@ function AirImg({ src, alt = "", className = "", onClick, fallbackSize = 22 }) {
   );
 }
 
-// Full-screen, view-only gallery.
+// Centered, view-only gallery popup (smooth open, zoom / rotate toolbar).
 function AirImageViewer({ images, start = 0, onClose }) {
+  const [i, setI] = useState(Math.min(start, Math.max(images.length - 1, 0)));
+  const [failed, setFailed] = useState(false);
+  const [shown, setShown] = useState(false); // drives the open animation
+  const [scale, setScale] = useState(1);
+  const [rot, setRot] = useState(0);
+  const touchX = useRef(null);
+  const n = images.length;
+  const resetView = () => {
+    setScale(1);
+    setRot(0);
+  };
+  const go = (d) => {
+    setFailed(false);
+    resetView();
+    setI((v) => (v + d + n) % n);
+  };
+  const zoom = (d) =>
+    setScale((v) => Math.min(4, Math.max(0.5, +(v + d).toFixed(2))));
+  useEffect(() => {
+    const t = requestAnimationFrame(() => setShown(true));
+    return () => cancelAnimationFrame(t);
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (n > 1 && e.key === "ArrowLeft") go(-1);
+      if (n > 1 && e.key === "ArrowRight") go(1);
+      if (e.key === "+" || e.key === "=") zoom(0.25);
+      if (e.key === "-") zoom(-0.25);
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [n]);
+  if (!n) return null;
+  const circle =
+    "absolute w-10 h-10 rounded-full bg-slate-900/50 hover:bg-slate-900/70 text-white grid place-items-center transition-colors";
+  const tool =
+    "w-9 h-9 rounded-full text-white grid place-items-center hover:bg-white/15 transition-colors";
+  return createPortal(
+    <div
+      className={`fixed inset-0 z-[80] flex items-center justify-center p-4 sm:p-10 bg-slate-950/55 backdrop-blur-sm transition-opacity duration-200 ${
+        shown ? "opacity-100" : "opacity-0"
+      }`}
+      onClick={onClose}
+      onTouchStart={(e) => (touchX.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        if (touchX.current == null || n < 2 || scale !== 1) return;
+        const dx = e.changedTouches[0].clientX - touchX.current;
+        touchX.current = null;
+        if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className={`${circle} right-4`}
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 16px)" }}
+      >
+        <Icons.X size={20} />
+      </button>
+      {/* Centered stage — image stays inside, never edge-to-edge */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onWheel={(e) => zoom(e.deltaY < 0 ? 0.15 : -0.15)}
+        className={`relative flex items-center justify-center overflow-hidden rounded-2xl bg-slate-900/40 shadow-2xl ring-1 ring-white/10 transition-all duration-200 ease-out ${
+          shown ? "scale-100 opacity-100" : "scale-95 opacity-0"
+        }`}
+        style={{ width: "min(92vw, 860px)", height: "min(74vh, 680px)" }}
+      >
+        {failed || !images[i].url ? (
+          <div className="text-center text-white/70 text-sm">
+            <Icons.ImageOff className="mx-auto mb-2" size={32} />
+            Image unavailable
+          </div>
+        ) : (
+          <img
+            src={images[i].url}
+            alt=""
+            onError={() => setFailed(true)}
+            className="max-w-full max-h-full object-contain select-none transition-transform duration-200 ease-out"
+            style={{ transform: `rotate(${rot}deg) scale(${scale})` }}
+            draggable={false}
+          />
+        )}
+      </div>
+      {n > 1 && (
+        <>
+          <button
+            type="button"
+            aria-label="Previous"
+            onClick={(e) => {
+              e.stopPropagation();
+              go(-1);
+            }}
+            className={`${circle} left-3 sm:left-6`}
+          >
+            <Icons.ChevronLeft size={22} />
+          </button>
+          <button
+            type="button"
+            aria-label="Next"
+            onClick={(e) => {
+              e.stopPropagation();
+              go(1);
+            }}
+            className={`${circle} right-3 sm:right-6`}
+          >
+            <Icons.ChevronRight size={22} />
+          </button>
+        </>
+      )}
+      {/* Toolbar: zoom out / zoom in / fit / rotate left / rotate right */}
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1.5 rounded-full bg-slate-900/60 backdrop-blur"
+        style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+      >
+        <button
+          type="button"
+          aria-label="Zoom out"
+          className={tool}
+          onClick={() => zoom(-0.25)}
+        >
+          <Icons.ZoomOut size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          className={tool}
+          onClick={() => zoom(0.25)}
+        >
+          <Icons.ZoomIn size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="Fit"
+          className={tool}
+          onClick={resetView}
+        >
+          <Icons.Maximize size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="Rotate left"
+          className={tool}
+          onClick={() => setRot((r) => r - 90)}
+        >
+          <Icons.RotateCcw size={18} />
+        </button>
+        <button
+          type="button"
+          aria-label="Rotate right"
+          className={tool}
+          onClick={() => setRot((r) => r + 90)}
+        >
+          <Icons.RotateCw size={18} />
+        </button>
+        {n > 1 && (
+          <span className="ml-1 pl-3 border-l border-white/20 text-white text-xs font-semibold">
+            {i + 1} / {n}
+          </span>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// Customer (mobile) gallery: classic full-width viewer, but the image is capped
+// to ~70% of the screen height so tall photos never cover the whole screen,
+// the close button or the counter.
+function AirImageViewerFull({ images, start = 0, onClose }) {
   const [i, setI] = useState(Math.min(start, Math.max(images.length - 1, 0)));
   const [failed, setFailed] = useState(false);
   const touchX = useRef(null);
@@ -31204,8 +31383,8 @@ function AirImageViewer({ images, start = 0, onClose }) {
           alt=""
           onClick={(e) => e.stopPropagation()}
           onError={() => setFailed(true)}
-          className="max-w-full max-h-full object-contain select-none"
-          style={{ maxWidth: "100vw", maxHeight: "100vh" }}
+          className="object-contain select-none"
+          style={{ maxWidth: "100vw", maxHeight: "70vh" }}
           draggable={false}
         />
       )}
@@ -31326,7 +31505,7 @@ function AirProductInfoCard({ row, images, loading, tr, Card }) {
         </div>
       </div>
       {viewer && (
-        <AirImageViewer
+        <AirImageViewerFull
           images={images}
           start={idx}
           onClose={() => setViewer(false)}
