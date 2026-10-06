@@ -24001,7 +24001,15 @@ const CustomerApp = (() => {
           "id,order_id,customer_id,customer,shop_name,product_name,tk,status,created_at,updated_at",
         )
         .order("created_at", { ascending: false });
-      if (!error) setAirShips((data || []).map(normalizeAirRow));
+      if (!error) {
+        const rows = applyCachedCovers((data || []).map(normalizeAirRow));
+        setAirShips(rows);
+        // Thumbnails arrive afterwards. Rows show a skeleton (not the plane
+        // icon) until this finishes; failures simply fall back to the icon.
+        const done = (list) =>
+          setAirShips(list.map((r) => ({ ...r, cover_loading: false })));
+        attachAirCovers(rows).then(done, () => done(rows));
+      }
     };
 
     const loadShips = async () => {
@@ -25277,9 +25285,17 @@ const CustomerApp = (() => {
         }
         className="p-3.5 flex items-center gap-3 cursor-pointer active:bg-slate-50"
       >
-        <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 grid place-items-center shrink-0">
-          <Icons.Plane size={20} />
-        </div>
+        {s.cover_url ? (
+          <AirImg
+            src={s.cover_url}
+            alt={s.product_name || s.order_id}
+            className="w-14 h-14 rounded-xl"
+          />
+        ) : (
+          <div className="w-14 h-14 rounded-xl bg-blue-50 text-blue-600 grid place-items-center shrink-0">
+            <Icons.Plane size={22} />
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <b className="text-[15px] truncate">{s.order_id}</b>
@@ -26161,6 +26177,12 @@ const CustomerApp = (() => {
     );
     const [history, setHistory] = useState([]);
     const [loadingAir, setLoadingAir] = useState(true);
+    const [airImages, setAirImages] = useState(
+      () => cachedAirImages(row?.id) || [],
+    );
+    const [airImagesLoading, setAirImagesLoading] = useState(
+      () => !cachedAirImages(row?.id),
+    );
     useEffect(() => {
       let alive = true;
       (async () => {
@@ -26182,6 +26204,9 @@ const CustomerApp = (() => {
               .eq("air_order_id", found.id)
               .order("created_at", { ascending: true });
             if (alive) setHistory(h || []);
+            // Images are optional and never block the page.
+            const imgs = await loadAirImages(found.id);
+            if (alive) setAirImages(imgs);
           }
         } else if (found)
           setHistory([
@@ -26192,7 +26217,10 @@ const CustomerApp = (() => {
               note: found.refund_reason,
             },
           ]);
-        if (alive) setLoadingAir(false);
+        if (alive) {
+          setLoadingAir(false);
+          setAirImagesLoading(false);
+        }
       })();
       return () => {
         alive = false;
@@ -26244,6 +26272,13 @@ const CustomerApp = (() => {
               fmt={fmtDateTime}
             />
           </Card>
+          <AirProductInfoCard
+            row={row}
+            images={airImages}
+            loading={airImagesLoading}
+            tr={tr}
+            Card={Card}
+          />
           <Card className="p-5">
             <h2 className="font-bold mb-4">
               {tr("Order Information", "ព័ត៌មានការបញ្ជាទិញ")}
@@ -30817,6 +30852,853 @@ function AirStatusTimeline({
   );
 }
 
+// ============================================================
+// AIR product / package images + product info
+// Files live in the private "air-shipment-images" bucket under
+// <air_order_id>/<file>.jpg ; rows live in public.air_order_images.
+// Customers are read-only (enforced by RLS in supabase/air_order_images.sql).
+// ============================================================
+const AIR_IMG_BUCKET = "air-shipment-images";
+const AIR_IMG_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const AIR_IMG_MAX_BYTES = 8 * 1024 * 1024;
+const AIR_IMG_MAX_COUNT = 5;
+
+function validateAirImage(file) {
+  if (!file) return "No file selected.";
+  if (!AIR_IMG_TYPES.includes(file.type))
+    return "Only JPG, PNG or WEBP images are allowed.";
+  if (file.size > AIR_IMG_MAX_BYTES) return "Image is larger than 8 MB.";
+  return "";
+}
+
+// Signed URLs are reused for 50 min (they last 60). The SAME url lets the
+// browser serve the picture from its own cache instead of downloading it
+// again; the cache survives page reloads for this tab (sessionStorage).
+const AIR_CACHE_TTL = 23 * 60 * 60 * 1000;
+const AIR_SIGN_SECONDS = 24 * 60 * 60;
+function airCacheLoad(key) {
+  try {
+    return new Map(JSON.parse(localStorage.getItem(key) || "[]"));
+  } catch {
+    return new Map();
+  }
+}
+function airCacheSave(key, map) {
+  try {
+    localStorage.setItem(key, JSON.stringify([...map]));
+  } catch {
+    /* storage full / blocked — cache is optional */
+  }
+}
+const AIR_URL_CACHE = airCacheLoad("cb_air_urls");
+const AIR_IMG_LOADED = new Set(); // urls already painted once this session
+const AIR_IMAGES_CACHE = airCacheLoad("cb_air_imgs"); // shipment id -> images
+function cachedAirImages(id) {
+  const c = id ? AIR_IMAGES_CACHE.get(id) : null;
+  return c && Date.now() - c.at < AIR_CACHE_TTL ? c.images : null;
+}
+// Never leave one customer's picture links on a shared device.
+if (typeof window !== "undefined" && supabase) {
+  supabase.auth.onAuthStateChange((evt) => {
+    if (evt !== "SIGNED_OUT") return;
+    ["cb_air_urls", "cb_air_covers", "cb_air_imgs"].forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {
+        /* ignore */
+      }
+    });
+    AIR_URL_CACHE.clear();
+    AIR_COVER_CACHE.clear();
+    AIR_IMAGES_CACHE.clear();
+  });
+}
+
+async function signAirImagePaths(paths) {
+  const out = {};
+  if (!supabase || !paths.length) return out;
+  const now = Date.now();
+  const missing = [];
+  paths.forEach((p) => {
+    const c = AIR_URL_CACHE.get(p);
+    if (c && now - c.at < AIR_CACHE_TTL) out[p] = c.url;
+    else missing.push(p);
+  });
+  if (!missing.length) return out;
+  try {
+    const { data } = await supabase.storage
+      .from(AIR_IMG_BUCKET)
+      .createSignedUrls(missing, AIR_SIGN_SECONDS);
+    (data || []).forEach((r) => {
+      if (r.signedUrl && r.path) {
+        out[r.path] = r.signedUrl;
+        AIR_URL_CACHE.set(r.path, { url: r.signedUrl, at: now });
+      }
+    });
+    airCacheSave("cb_air_urls", AIR_URL_CACHE);
+  } catch {
+    /* images are optional — never break the page */
+  }
+  return out;
+}
+
+// All images of one shipment (sorted). Never throws.
+async function loadAirImages(airOrderId) {
+  if (!supabase || !airOrderId || String(airOrderId).startsWith("air-local-"))
+    return [];
+  try {
+    const { data, error } = await supabase
+      .from("air_order_images")
+      .select("id,air_order_id,storage_path,sort_order,created_at")
+      .eq("air_order_id", airOrderId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) return [];
+    if (!data?.length) {
+      AIR_IMAGES_CACHE.delete(airOrderId);
+      airCacheSave("cb_air_imgs", AIR_IMAGES_CACHE);
+      return [];
+    }
+    const urls = await signAirImagePaths(data.map((r) => r.storage_path));
+    const images = data.map((r) => ({ ...r, url: urls[r.storage_path] || "" }));
+    AIR_IMAGES_CACHE.set(airOrderId, { images, at: Date.now() });
+    airCacheSave("cb_air_imgs", AIR_IMAGES_CACHE);
+    return images;
+  } catch {
+    return [];
+  }
+}
+
+// Short-lived cache so thumbnails don't re-flash when the list reloads.
+// (Signed URLs last 1h; entries are reused for 50 min.)
+const AIR_COVER_CACHE = airCacheLoad("cb_air_covers");
+function applyCachedCovers(rows) {
+  const now = Date.now();
+  return rows.map((r) => {
+    const c = AIR_COVER_CACHE.get(r.id);
+    if (c && now - c.at < 50 * 60 * 1000)
+      return {
+        ...r,
+        cover_url: c.url,
+        image_count: c.count,
+        cover_loading: false,
+      };
+    return { ...r, cover_loading: false };
+  });
+}
+
+// Customer list: ONE query + ONE signing call for every cover image.
+async function attachAirCovers(rows) {
+  if (!supabase || !rows?.length) return rows;
+  try {
+    const { data, error } = await supabase
+      .from("air_order_images")
+      .select("air_order_id,storage_path,sort_order,created_at")
+      .in(
+        "air_order_id",
+        rows.map((r) => r.id),
+      )
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) return rows;
+    if (!data?.length) {
+      // No images anymore (e.g. staff deleted them): drop any stale cover.
+      rows.forEach((r) => AIR_COVER_CACHE.delete(r.id));
+      airCacheSave("cb_air_covers", AIR_COVER_CACHE);
+      return rows.map((r) => ({ ...r, cover_url: "", image_count: 0 }));
+    }
+    const cover = {},
+      count = {};
+    data.forEach((r) => {
+      count[r.air_order_id] = (count[r.air_order_id] || 0) + 1;
+      if (!cover[r.air_order_id]) cover[r.air_order_id] = r.storage_path;
+    });
+    const urls = await signAirImagePaths(Object.values(cover));
+    const updated = rows.map((r) => {
+      const url = urls[cover[r.id]] || "";
+      if (url)
+        AIR_COVER_CACHE.set(r.id, {
+          url,
+          count: count[r.id] || 0,
+          at: Date.now(),
+        });
+      else AIR_COVER_CACHE.delete(r.id);
+      return { ...r, cover_url: url, image_count: count[r.id] || 0 };
+    });
+    airCacheSave("cb_air_covers", AIR_COVER_CACHE);
+    return updated;
+  } catch {
+    return rows;
+  }
+}
+
+// Staff only (RLS enforces it too). Returns { ok, failed:[messages] }.
+async function uploadAirImages(airOrderId, files, user) {
+  requirePermission(user, "air_order.edit");
+  const { data: existing } = await supabase
+    .from("air_order_images")
+    .select("sort_order")
+    .eq("air_order_id", airOrderId)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  let order = existing?.length ? Number(existing[0].sort_order) + 1 : 0;
+  const by = user?.name || user?.email || "Admin";
+  let ok = 0;
+  const failed = [];
+  for (const file of files) {
+    const bad = validateAirImage(file);
+    if (bad) {
+      failed.push(`${file.name}: ${bad}`);
+      continue;
+    }
+    let path = "";
+    try {
+      const dataUrl = await compressImage(file, 1280, 0.78);
+      const blob = await (await fetch(dataUrl)).blob();
+      path = `${airOrderId}/${makeId()}.jpg`;
+      const { error: upErr } = await supabase.storage
+        .from(AIR_IMG_BUCKET)
+        .upload(path, blob, { contentType: "image/jpeg" });
+      if (upErr) throw upErr;
+      const { error } = await supabase.from("air_order_images").insert({
+        air_order_id: airOrderId,
+        storage_path: path,
+        sort_order: order++,
+        created_by: by,
+      });
+      if (error) {
+        await supabase.storage.from(AIR_IMG_BUCKET).remove([path]);
+        throw error;
+      }
+      ok++;
+    } catch (err) {
+      failed.push(`${file.name}: ${err.message || "upload failed"}`);
+    }
+  }
+  return { ok, failed };
+}
+
+async function deleteAirImage(img, user) {
+  requirePermission(user, "air_order.edit");
+  const { error } = await supabase
+    .from("air_order_images")
+    .delete()
+    .eq("id", img.id);
+  if (error) throw error;
+  // The row is gone; a failed file clean-up is harmless (best effort).
+  await supabase.storage
+    .from(AIR_IMG_BUCKET)
+    .remove([img.storage_path])
+    .catch(() => {});
+}
+
+// Make `img` the primary (first) image.
+async function makeAirImagePrimary(images, img, user) {
+  requirePermission(user, "air_order.edit");
+  const ordered = [img, ...images.filter((x) => x.id !== img.id)];
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i].sort_order === i) continue;
+    const { error } = await supabase
+      .from("air_order_images")
+      .update({ sort_order: i, updated_at: new Date().toISOString() })
+      .eq("id", ordered[i].id);
+    if (error) throw error;
+  }
+}
+
+// Image with skeleton while loading and a graceful fallback (no broken icon).
+function AirImg({ src, alt = "", className = "", onClick, fallbackSize = 22 }) {
+  const initial = (u) =>
+    !u ? "empty" : AIR_IMG_LOADED.has(u) ? "ok" : "loading";
+  const [state, setState] = useState(initial(src));
+  useEffect(() => {
+    setState(initial(src));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+  const showFallback = state === "empty" || state === "error";
+  return (
+    <div
+      onClick={showFallback ? undefined : onClick}
+      className={`relative overflow-hidden bg-slate-100 shrink-0 ${onClick && !showFallback ? "cursor-pointer" : ""} ${className}`}
+    >
+      {state === "loading" && (
+        <div className="absolute inset-0 animate-pulse bg-slate-200/70" />
+      )}
+      {showFallback ? (
+        <div className="absolute inset-0 grid place-items-center text-blue-400 bg-blue-50">
+          <Icons.Plane size={fallbackSize} />
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          draggable={false}
+          onLoad={() => {
+            AIR_IMG_LOADED.add(src);
+            setState("ok");
+          }}
+          onError={() => setState("error")}
+          className={`w-full h-full object-cover transition-opacity duration-200 ${state === "ok" ? "opacity-100" : "opacity-0"}`}
+        />
+      )}
+    </div>
+  );
+}
+
+// Full-screen, view-only gallery.
+function AirImageViewer({ images, start = 0, onClose }) {
+  const [i, setI] = useState(Math.min(start, Math.max(images.length - 1, 0)));
+  const [failed, setFailed] = useState(false);
+  const touchX = useRef(null);
+  const n = images.length;
+  const go = (d) => {
+    setFailed(false);
+    setI((v) => (v + d + n) % n);
+  };
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (n > 1 && e.key === "ArrowLeft") go(-1);
+      if (n > 1 && e.key === "ArrowRight") go(1);
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [n]);
+  if (!n) return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] bg-slate-950/95 flex items-center justify-center"
+      onClick={onClose}
+      onTouchStart={(e) => (touchX.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        if (touchX.current == null || n < 2) return;
+        const dx = e.changedTouches[0].clientX - touchX.current;
+        touchX.current = null;
+        if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className="absolute right-4 w-10 h-10 rounded-full bg-white/15 text-white grid place-items-center"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 16px)" }}
+      >
+        <Icons.X size={20} />
+      </button>
+      {failed || !images[i].url ? (
+        <div className="text-center text-white/70 text-sm">
+          <Icons.ImageOff className="mx-auto mb-2" size={32} />
+          Image unavailable
+        </div>
+      ) : (
+        <img
+          src={images[i].url}
+          alt=""
+          onClick={(e) => e.stopPropagation()}
+          onError={() => setFailed(true)}
+          className="max-w-full max-h-full object-contain select-none"
+          style={{ maxWidth: "100vw", maxHeight: "100vh" }}
+          draggable={false}
+        />
+      )}
+      {n > 1 && (
+        <>
+          <button
+            type="button"
+            aria-label="Previous"
+            onClick={(e) => {
+              e.stopPropagation();
+              go(-1);
+            }}
+            className="absolute left-3 w-10 h-10 rounded-full bg-white/15 text-white grid place-items-center"
+          >
+            <Icons.ChevronLeft size={22} />
+          </button>
+          <button
+            type="button"
+            aria-label="Next"
+            onClick={(e) => {
+              e.stopPropagation();
+              go(1);
+            }}
+            className="absolute right-3 w-10 h-10 rounded-full bg-white/15 text-white grid place-items-center"
+          >
+            <Icons.ChevronRight size={22} />
+          </button>
+          <span
+            className="absolute left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-white/15 text-white text-xs font-semibold"
+            style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)" }}
+          >
+            {i + 1} / {n}
+          </span>
+        </>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
+// Customer card: product image(s) + name / variant / qty / price. View only.
+function AirProductInfoCard({ row, images, loading, tr, Card }) {
+  const [idx, setIdx] = useState(0);
+  const [viewer, setViewer] = useState(false);
+  const touchX = useRef(null);
+  const n = images.length;
+  const cur = images[Math.min(idx, Math.max(n - 1, 0))];
+  const qty = Number(row.quantity);
+  const price = Number(row.unit_price);
+  const hasPrice = row.unit_price != null && Number.isFinite(price);
+  return (
+    <Card className="p-5">
+      <h2 className="font-bold mb-4">
+        {tr("Product Information", "ព័ត៌មានផលិតផល")}
+      </h2>
+      <div className="flex gap-4">
+        <div className="shrink-0">
+          {loading ? (
+            <div className="w-28 h-28 rounded-2xl bg-slate-200/70 animate-pulse" />
+          ) : (
+            <div
+              onTouchStart={(e) => (touchX.current = e.touches[0].clientX)}
+              onTouchEnd={(e) => {
+                if (touchX.current == null || n < 2) return;
+                const dx = e.changedTouches[0].clientX - touchX.current;
+                touchX.current = null;
+                if (Math.abs(dx) > 40)
+                  setIdx((v) => (v + (dx < 0 ? 1 : -1) + n) % n);
+              }}
+            >
+              <AirImg
+                src={cur?.url}
+                alt={row.product_name || "Product"}
+                onClick={n ? () => setViewer(true) : undefined}
+                className="w-28 h-28 rounded-2xl"
+                fallbackSize={30}
+              />
+            </div>
+          )}
+          {n > 1 && (
+            <div className="flex justify-center gap-1.5 mt-2">
+              {images.map((im, k) => (
+                <button
+                  key={im.id}
+                  type="button"
+                  aria-label={`Image ${k + 1}`}
+                  onClick={() => setIdx(k)}
+                  className={`h-1.5 rounded-full transition-all ${k === idx ? "w-4 bg-blue-600" : "w-1.5 bg-slate-300"}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col">
+          <p className="font-bold text-[15px] leading-snug break-words">
+            {row.product_name || "—"}
+          </p>
+          {(row.variant || qty > 0) && (
+            <p className="text-[13px] text-slate-500 mt-1 break-words">
+              {[row.variant, qty > 0 ? `${qty}pcs` : ""]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+          {hasPrice && (
+            <p className="font-bold text-[15px] mt-2">{money(price)}</p>
+          )}
+          {n > 0 && (
+            <button
+              type="button"
+              onClick={() => setViewer(true)}
+              className="mt-auto self-start h-8 px-3 rounded-full bg-blue-600 text-white text-xs font-bold inline-flex items-center gap-1"
+            >
+              {tr("View All", "មើលទាំងអស់")} ({n})
+              <Icons.ArrowRight size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+      {viewer && (
+        <AirImageViewer
+          images={images}
+          start={idx}
+          onClose={() => setViewer(false)}
+        />
+      )}
+    </Card>
+  );
+}
+
+// Staff: pick several images before the shipment exists (Create modal).
+function AirImagePicker({ files, setFiles }) {
+  const [previews, setPreviews] = useState([]);
+  const inputRef = useRef(null);
+  useEffect(() => {
+    const urls = files.map((f) => URL.createObjectURL(f));
+    setPreviews(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [files]);
+  function add(list) {
+    const next = [...files];
+    for (const f of Array.from(list || [])) {
+      const bad = validateAirImage(f);
+      if (bad) {
+        emitCBToast("err", "Invalid image", `${f.name}: ${bad}`);
+        continue;
+      }
+      if (next.length >= AIR_IMG_MAX_COUNT) {
+        emitCBToast("err", "Too many images", `Maximum ${AIR_IMG_MAX_COUNT}.`);
+        break;
+      }
+      next.push(f);
+    }
+    setFiles(next);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+  return (
+    <div>
+      <label className={LABEL_CLS}>Product / Package Image</label>
+      <div className="flex flex-wrap gap-2">
+        {previews.map((u, k) => (
+          <div key={u} className="relative w-20 h-20">
+            <img
+              src={u}
+              alt=""
+              className="w-full h-full object-cover rounded-xl border border-slate-200"
+            />
+            {k === 0 && (
+              <span className="absolute left-1 bottom-1 text-[9px] font-bold bg-blue-600 text-white rounded px-1">
+                Primary
+              </span>
+            )}
+            <button
+              type="button"
+              aria-label="Remove image"
+              onClick={() => setFiles(files.filter((_, j) => j !== k))}
+              className="absolute -right-1.5 -top-1.5 w-5 h-5 rounded-full bg-slate-900 text-white grid place-items-center"
+            >
+              <Icons.X size={11} />
+            </button>
+          </div>
+        ))}
+        {files.length < AIR_IMG_MAX_COUNT && (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="w-20 h-20 rounded-xl border-2 border-dashed border-slate-300 text-slate-400 grid place-items-center hover:border-blue-400 hover:text-blue-500"
+          >
+            <span className="text-center text-[11px] font-semibold">
+              <Icons.Plus size={18} className="mx-auto" />
+              Upload
+            </span>
+          </button>
+        )}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(e) => add(e.target.files)}
+      />
+      <p className="text-[11px] text-slate-400 mt-1.5">
+        JPG, PNG, WEBP · max 8 MB each · up to {AIR_IMG_MAX_COUNT} images. The
+        first one is the primary image.
+      </p>
+    </div>
+  );
+}
+
+// Staff: edit product info + manage images of an existing shipment.
+function AirProductEditModal({ open, row, onClose, onSaved }) {
+  const { user } = useAuth();
+  const [product, setProduct] = useState("");
+  const [variant, setVariant] = useState("");
+  const [qty, setQty] = useState("");
+  const [price, setPrice] = useState("");
+  const [images, setImages] = useState([]);
+  const [imgBusy, setImgBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const fileRef = useRef(null);
+  const refresh = React.useCallback(async () => {
+    if (row?.id) setImages(await loadAirImages(row.id));
+  }, [row?.id]);
+  useEffect(() => {
+    if (open && row) {
+      setProduct(row.product_name || "");
+      setVariant(row.variant || "");
+      setQty(row.quantity ?? "");
+      setPrice(row.unit_price ?? "");
+      setError("");
+      refresh();
+    }
+  }, [open, row, refresh]);
+  if (!open || !row) return null;
+  const canUseImages = !!supabase && !String(row.id).startsWith("air-local-");
+  async function addFiles(list) {
+    const files = Array.from(list || []);
+    if (fileRef.current) fileRef.current.value = "";
+    if (!files.length) return;
+    if (images.length + files.length > AIR_IMG_MAX_COUNT)
+      return emitCBToast(
+        "err",
+        "Too many images",
+        `Maximum ${AIR_IMG_MAX_COUNT} images per shipment.`,
+      );
+    setImgBusy(true);
+    try {
+      const { ok, failed } = await uploadAirImages(row.id, files, user);
+      if (ok) emitCBToast("ok", "Image uploaded", `${ok} image(s) saved.`);
+      if (failed.length) emitCBToast("err", "Upload failed", failed[0]);
+      await refresh();
+    } catch (err) {
+      emitCBToast("err", "Upload failed", err.message || "Not allowed.");
+    } finally {
+      setImgBusy(false);
+    }
+  }
+  async function remove(img) {
+    const ok = await confirmDialog({
+      title: "Delete image?",
+      message: "This image will be removed from the shipment.",
+      confirmText: "Delete",
+    });
+    if (!ok) return;
+    setImgBusy(true);
+    try {
+      await deleteAirImage(img, user);
+      emitCBToast("ok", "Image deleted", "The image was removed.");
+      await refresh();
+    } catch (err) {
+      emitCBToast("err", "Delete failed", err.message || "Not allowed.");
+    } finally {
+      setImgBusy(false);
+    }
+  }
+  async function primary(img) {
+    setImgBusy(true);
+    try {
+      await makeAirImagePrimary(images, img, user);
+      await refresh();
+    } catch (err) {
+      emitCBToast("err", "Update failed", err.message || "Not allowed.");
+    } finally {
+      setImgBusy(false);
+    }
+  }
+  async function save(e) {
+    e.preventDefault();
+    setError("");
+    const q = qty === "" ? null : Number(qty);
+    const p = price === "" ? null : Number(price);
+    if (q != null && (!Number.isInteger(q) || q < 0))
+      return setError("Quantity must be a whole number.");
+    if (p != null && (!Number.isFinite(p) || p < 0))
+      return setError("Price must be a positive number.");
+    setBusy(true);
+    try {
+      requirePermission(user, "air_order.edit");
+      const patch = {
+        product_name: product.trim() || null,
+        variant: variant.trim() || null,
+        quantity: q,
+        unit_price: p,
+        updated_at: new Date().toISOString(),
+        updated_by: user?.name || user?.email || "Admin",
+      };
+      let saved;
+      if (supabase && !String(row.id).startsWith("air-local-")) {
+        const { data, error: err } = await supabase
+          .from("air_orders")
+          .update(patch)
+          .eq("id", row.id)
+          .select("*")
+          .single();
+        if (err) throw err;
+        saved = normalizeAirRow(data);
+      } else {
+        saved = { ...row, ...patch };
+        airOrderLocalWrite(
+          airOrderLocalRows().map((x) => (x.id === row.id ? saved : x)),
+        );
+      }
+      emitCBToast("ok", "Product updated", `${row.order_id} was updated.`);
+      onSaved(saved);
+    } catch (err) {
+      setError(err.message || "Unable to update product.");
+      emitCBToast("err", "Update failed", err.message || "Not allowed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <form
+        onSubmit={save}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h3 className="font-bold text-lg">Product & Images</h3>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          {error && (
+            <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">
+              {error}
+            </div>
+          )}
+          <div>
+            <label className={LABEL_CLS}>Product</label>
+            <input
+              className={INPUT_CLS}
+              value={product}
+              onChange={(e) => setProduct(e.target.value)}
+              placeholder="e.g. iPhone 14 Pro Max Case"
+            />
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Variant / Color</label>
+            <input
+              className={INPUT_CLS}
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+              placeholder="e.g. Orange / Black"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={LABEL_CLS}>Quantity</label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                className={INPUT_CLS}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLS}>Total Price (USD)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                className={INPUT_CLS}
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+              />
+            </div>
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Product / Package Image</label>
+            {canUseImages ? (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {images.map((im, k) => (
+                    <div key={im.id} className="relative w-20 h-20">
+                      <AirImg
+                        src={im.url}
+                        className="w-20 h-20 rounded-xl border border-slate-200"
+                        fallbackSize={18}
+                      />
+                      {k === 0 ? (
+                        <span className="absolute left-1 bottom-1 text-[9px] font-bold bg-blue-600 text-white rounded px-1">
+                          Primary
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={imgBusy}
+                          onClick={() => primary(im)}
+                          className="absolute left-1 bottom-1 text-[9px] font-bold bg-white/90 text-slate-700 rounded px-1"
+                        >
+                          Set primary
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        aria-label="Delete image"
+                        disabled={imgBusy}
+                        onClick={() => remove(im)}
+                        className="absolute -right-1.5 -top-1.5 w-5 h-5 rounded-full bg-red-600 text-white grid place-items-center"
+                      >
+                        <Icons.Trash2 size={11} />
+                      </button>
+                    </div>
+                  ))}
+                  {images.length < AIR_IMG_MAX_COUNT && (
+                    <button
+                      type="button"
+                      disabled={imgBusy}
+                      onClick={() => fileRef.current?.click()}
+                      className="w-20 h-20 rounded-xl border-2 border-dashed border-slate-300 text-slate-400 grid place-items-center hover:border-blue-400 hover:text-blue-500 disabled:opacity-50"
+                    >
+                      {imgBusy ? (
+                        <Loader2 size={18} className="animate-spin" />
+                      ) : (
+                        <span className="text-center text-[11px] font-semibold">
+                          <Icons.Plus size={18} className="mx-auto" />
+                          Upload
+                        </span>
+                      )}
+                    </button>
+                  )}
+                </div>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  multiple
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={(e) => addFiles(e.target.files)}
+                />
+                <p className="text-[11px] text-slate-400 mt-1.5">
+                  JPG, PNG, WEBP · max 8 MB each · up to {AIR_IMG_MAX_COUNT}.
+                  Changes to images are saved immediately.
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-400">
+                Images need a connected Supabase project.
+              </p>
+            )}
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold"
+          >
+            Close
+          </button>
+          <button
+            disabled={busy}
+            className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50"
+          >
+            {busy ? "Saving…" : "Save Product Info"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function AirOrderCreateModal({ open, onClose, onSaved }) {
   const { user } = useAuth();
   const [query, setQuery] = useState("");
@@ -30824,6 +31706,10 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
   const [orderId, setOrderId] = useState("");
   const [shop, setShop] = useState("");
   const [product, setProduct] = useState("");
+  const [variant, setVariant] = useState("");
+  const [qty, setQty] = useState("");
+  const [price, setPrice] = useState("");
+  const [imgFiles, setImgFiles] = useState([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -30839,6 +31725,10 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
       setOrderId("");
       setShop("");
       setProduct("");
+      setVariant("");
+      setQty("");
+      setPrice("");
+      setImgFiles([]);
       setNote("");
       setBusy(false);
       setError("");
@@ -30850,6 +31740,12 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
     const oid = orderId.trim();
     if (!customer) return setError("Please select a Customer.");
     if (!oid) return setError("Shop Order ID is required.");
+    const qn = qty === "" ? null : Number(qty),
+      pn = price === "" ? null : Number(price);
+    if (qn != null && (!Number.isInteger(qn) || qn < 0))
+      return setError("Quantity must be a whole number.");
+    if (pn != null && (!Number.isFinite(pn) || pn < 0))
+      return setError("Price must be a positive number.");
     setBusy(true);
     setError("");
     try {
@@ -30869,6 +31765,11 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
         created_at: now,
         updated_at: now,
       };
+      // New columns are only sent when filled in, so shipments without
+      // product info behave exactly as before.
+      if (variant.trim()) row.variant = variant.trim();
+      if (qn != null) row.quantity = qn;
+      if (pn != null) row.unit_price = pn;
       if (supabase) {
         const { data, error } = await supabase
           .from("air_orders")
@@ -30882,6 +31783,26 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
           created_by: by,
           note: "AIR Order created",
         });
+        if (imgFiles.length) {
+          // The shipment is already saved; an image problem never undoes it.
+          try {
+            const { ok, failed } = await uploadAirImages(
+              data.id,
+              imgFiles,
+              user,
+            );
+            if (ok)
+              emitCBToast("ok", "Image uploaded", `${ok} image(s) saved.`);
+            if (failed.length)
+              emitCBToast("err", "Image upload failed", failed[0]);
+          } catch (imgErr) {
+            emitCBToast(
+              "err",
+              "Image upload failed",
+              imgErr.message || "Not allowed.",
+            );
+          }
+        }
         onSaved(data);
       } else {
         const local = { id: `air-local-${Date.now()}`, ...row };
@@ -31043,6 +31964,42 @@ function AirOrderCreateModal({ open, onClose, onSaved }) {
               placeholder="Product / description"
             />
           </div>
+          <div>
+            <label className={LABEL_CLS}>Variant / Color</label>
+            <input
+              className={INPUT_CLS}
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+              placeholder="e.g. Orange / Black"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={LABEL_CLS}>Quantity</label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                className={INPUT_CLS}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className={LABEL_CLS}>Total Price (USD)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                className={INPUT_CLS}
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+              />
+            </div>
+          </div>
+          {supabase && (
+            <AirImagePicker files={imgFiles} setFiles={setImgFiles} />
+          )}
           <div>
             <label className={LABEL_CLS}>Note</label>
             <textarea
@@ -31883,6 +32840,13 @@ function AirShipmentDetailPage() {
   const [refundOpen, setRefundOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [productOpen, setProductOpen] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [staffImages, setStaffImages] = useState([]);
+  const [staffViewer, setStaffViewer] = useState(-1);
+  const reloadStaffImages = React.useCallback(async (airId) => {
+    setStaffImages(await loadAirImages(airId));
+  }, []);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -31922,6 +32886,8 @@ function AirShipmentDetailPage() {
           .eq("air_order_id", data.id)
           .order("created_at", { ascending: true });
         if (alive) setHistory(h || []);
+        const imgs = await loadAirImages(data.id);
+        if (alive) setStaffImages(imgs);
       }
       setLoading(false);
     })();
@@ -32002,6 +32968,14 @@ function AirShipmentDetailPage() {
           >
             History
           </button>
+          <button
+            type="button"
+            onClick={() => setInvoiceOpen(true)}
+            className="h-10 px-3 rounded-xl border border-slate-200 bg-white text-slate-700 text-sm font-semibold hover:bg-slate-50 inline-flex items-center gap-1.5"
+          >
+            <Icons.Printer size={15} />
+            Print Invoice
+          </button>
           {canRefund &&
             canonicalAirStatus(row.status) === "Order Processing" && (
               <button
@@ -32033,6 +33007,19 @@ function AirShipmentDetailPage() {
                     role="menu"
                     className="absolute right-0 top-11 z-40 w-48 rounded-xl border border-slate-200 bg-white p-1 shadow-lg"
                   >
+                    {canTransfer && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          setProductOpen(true);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Icons.Image size={15} /> Product & Images
+                      </button>
+                    )}
                     {canTransfer && (
                       <button
                         type="button"
@@ -32084,6 +33071,11 @@ function AirShipmentDetailPage() {
               { label: "TK", value: row.tk || "—" },
               { label: "Shop / Platform", value: row.shop_name || "—" },
               { label: "Product", value: row.product_name || "—", span: true },
+              { label: "Variant / Color", value: row.variant || "—" },
+              {
+                label: "Qty · Price",
+                value: `${row.quantity ?? "—"} · ${row.unit_price != null ? money(row.unit_price) : "—"}`,
+              },
               {
                 label: "Created",
                 value: row.created_at ? formatDbTimestamp(row.created_at) : "—",
@@ -32097,6 +33089,30 @@ function AirShipmentDetailPage() {
           />
         </div>
       </div>
+      {staffImages.length > 0 && (
+        <div className="cb-surface p-5">
+          <h2 className="font-bold text-sm mb-3">
+            Product / Package Images ({staffImages.length})
+          </h2>
+          <div className="flex flex-wrap gap-3">
+            {staffImages.map((im, k) => (
+              <AirImg
+                key={im.id}
+                src={im.url}
+                onClick={() => setStaffViewer(k)}
+                className="w-24 h-24 rounded-xl border border-slate-200"
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      {staffViewer >= 0 && (
+        <AirImageViewer
+          images={staffImages}
+          start={staffViewer}
+          onClose={() => setStaffViewer(-1)}
+        />
+      )}
       {updateOpen && (
         <AirStatusUpdateModal
           open
@@ -32110,6 +33126,22 @@ function AirShipmentDetailPage() {
       )}
       {historyOpen && (
         <AirHistoryModal row={row} onClose={() => setHistoryOpen(false)} />
+      )}
+      {invoiceOpen && (
+        <AirInvoiceModal row={row} onClose={() => setInvoiceOpen(false)} />
+      )}
+      {productOpen && (
+        <AirProductEditModal
+          open
+          row={row}
+          onClose={() => {
+            setProductOpen(false);
+            reloadStaffImages(row.id);
+          }}
+          onSaved={(r) => {
+            setRow(r);
+          }}
+        />
       )}
       {transferOpen && (
         <AirTransferModal
@@ -36690,6 +37722,450 @@ function TopUpModal({ customer, onClose, onDone }) {
   );
 }
 
+// ------------------------------------------------------------
+// Print Invoice (customer shipping-fee invoice, A4)
+// ------------------------------------------------------------
+function invoiceStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  const h = d.getHours();
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(h % 12 || 12)}:${p(d.getMinutes())} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+function invoiceHtml({ company, customer, rows, issuedBy, when }) {
+  const e = htmlEsc;
+  const logo = company?.logoUrl || company?.logoDataUrl || "";
+  const total = rows.reduce((a, r) => a + (Number(r.total) || 0), 0);
+  const $ = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${e(customer.code)}</title>
+<style>
+  @page{size:A4;margin:16mm 14mm}
+  *{box-sizing:border-box}
+  body{font-family:'Inter','Noto Sans Khmer',Arial,sans-serif;font-size:14px;color:#111;margin:0}
+  .top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:22px}
+  .top .logo img{max-height:56px;max-width:190px;object-fit:contain}
+  .top .logo b{font-size:20px}
+  .top h1{font-size:20px;font-weight:500;margin:0;text-align:center}
+  .top .meta{text-align:right;line-height:1.55}
+  .cust{line-height:1.6;margin-bottom:12px;font-size:15px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid #9aa3b5;padding:6px 10px}
+  th{background:#f1f3f6;font-weight:500;text-align:center}
+  td.c{text-align:center}
+  td.tot{text-align:right;font-weight:600}
+  td.sum{font-weight:600}
+  .sign{display:grid;grid-template-columns:repeat(3,1fr);text-align:center;margin-top:34px;font-weight:600}
+  .sign div{padding-bottom:70px}
+  .line{border-top:1px solid #d5d9e0;margin-top:20px}
+</style></head><body>
+<div class="top">
+  <div class="logo">${logo ? `<img src="${e(logo)}" alt="">` : `<b>${e(company?.name || "")}</b>`}</div>
+  <h1>Invoice</h1>
+  <div class="meta"><div><b>Date:</b> ${e(when)}</div><div><b>Issued By:</b> ${e(issuedBy)}</div></div>
+</div>
+<div class="cust">
+  <div><b>UID:</b> ${e(customer.code)}</div>
+  <div><b>Name:</b> ${e(customer.name)}</div>
+  <div><b>Phone Number:</b> ${e(customer.phone)}</div>
+  <div><b>Total Order:</b> ${rows.length}</div>
+</div>
+<table>
+  <tr><th>#</th><th>Customer</th><th>PO</th><th>Tracking Number</th><th>Parcel</th><th>Credit Repayment</th><th>Shipping Fee</th><th>Total</th></tr>
+  ${rows
+    .map(
+      (r, i) =>
+        `<tr><td class="c">${i + 1}</td><td>${e(r.customer)}</td><td>${e(r.po)}</td><td>${e(r.tk)}</td><td class="c">${e(r.parcel)}</td><td>${$(r.credit)}</td><td>${$(r.fee)}</td><td>${$(r.total)}</td></tr>`,
+    )
+    .join("")}
+  <tr><td colspan="6" class="tot">Total</td><td class="sum" colspan="2">${$(total)}</td></tr>
+</table>
+<div class="sign"><div>Customer Signature</div><div>Employee Signature</div><div>Authorized Signature</div></div>
+<div class="line"></div>
+</body></html>`;
+}
+
+// Prints once images (logo) have finished loading.
+function printInvoiceHtml(html) {
+  const f = document.createElement("iframe");
+  f.style.cssText =
+    "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+  document.body.appendChild(f);
+  f.onload = async () => {
+    const d = f.contentDocument;
+    await Promise.all(
+      Array.from(d.images).map((im) =>
+        im.complete
+          ? null
+          : new Promise((r) => {
+              im.onload = im.onerror = r;
+            }),
+      ),
+    );
+    f.contentWindow.focus();
+    f.contentWindow.print();
+    setTimeout(() => f.remove(), 3000);
+  };
+  f.srcdoc = html;
+}
+
+async function printShippingInvoice({ pkg, fee, user, company }) {
+  let cust = null;
+  if (supabase && pkg.customer_id) {
+    const { data } = await supabase
+      .from("customers")
+      .select("name, customer_code, phone")
+      .eq("id", pkg.customer_id)
+      .maybeSingle();
+    cust = data;
+  }
+  const customer = {
+    code: cust?.customer_code || pkg.customer_code || "—",
+    name: cust?.name || pkg.customer_name || "—",
+    phone: cust?.phone || "—",
+  };
+  printInvoiceHtml(
+    invoiceHtml({
+      company,
+      customer,
+      rows: [
+        {
+          customer: customer.name,
+          po: pkg.order_no || pkg.order || "—",
+          tk: pkg.tk,
+          parcel: Math.max(1, Math.floor(Number(pkg.package_count)) || 1),
+          credit: 0,
+          fee: fee.total,
+          total: fee.total,
+        },
+      ],
+      issuedBy: user?.name || user?.email || "—",
+      when: invoiceStamp(),
+    }),
+  );
+}
+
+// AIR Shipment invoice: Shop Order ID · Customer · Qty · Price · TK.
+function airInvoiceHtml({ company, customer, rows, issuedBy, when }) {
+  const e = htmlEsc;
+  const logo = company?.logoUrl || company?.logoDataUrl || "";
+  const $ = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+  const total = rows.reduce((a, r) => a + (Number(r.price) || 0), 0);
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Invoice ${e(customer.code)}</title>
+<style>
+  @page{size:A4;margin:16mm 14mm}
+  *{box-sizing:border-box}
+  body{font-family:'Inter','Noto Sans Khmer',Arial,sans-serif;font-size:15px;color:#111;margin:0}
+  .top{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:22px}
+  .top .logo img{max-height:60px;max-width:200px;object-fit:contain}
+  .top .logo b{font-size:20px}
+  .top h1{font-size:22px;font-weight:500;margin:0;text-align:center}
+  .top .meta{text-align:right;line-height:1.55}
+  .cust{line-height:1.7;margin-bottom:14px;font-size:16px}
+  table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:15px}
+  th,td{border:1px solid #9aa3b5;padding:11px 12px;text-align:center;vertical-align:middle;word-break:break-word}
+  th{background:#f1f3f6;font-weight:600}
+  td.c{text-align:center}
+  td.tot{text-align:right;padding-right:20px;font-weight:700}
+  td.sum{font-weight:700}
+  .sign{display:grid;grid-template-columns:repeat(3,1fr);text-align:center;margin-top:30px;font-size:16px;font-weight:600}
+  .sign div{padding-bottom:50px}
+  .line{border-top:1px solid #d5d9e0;margin-top:20px}
+</style></head><body>
+<div class="top">
+  <div class="logo">${logo ? `<img src="${e(logo)}" alt="">` : `<b>${e(company?.name || "")}</b>`}</div>
+  <h1>Invoice</h1>
+  <div class="meta"><div><b>Date:</b> ${e(when)}</div><div><b>Issued By:</b> ${e(issuedBy)}</div></div>
+</div>
+<div class="cust">
+  <div><b>Customer ID:</b> ${e(customer.code)}</div>
+  <div><b>Customer Name:</b> ${e(customer.name)}</div>
+  <div><b>Phone Number:</b> ${e(customer.phone)}</div>
+  <div><b>Total Order:</b> ${rows.length}</div>
+</div>
+<table>
+  <colgroup><col style="width:7%"><col style="width:28%"><col style="width:27%"><col style="width:16%"><col style="width:22%"></colgroup>
+  <tr><th>#</th><th>Shop Order ID</th><th>Customer</th><th>Price</th><th>TK</th></tr>
+  ${rows
+    .map(
+      (r, i) =>
+        `<tr><td class="c">${i + 1}</td><td>${e(r.shopOrderId)}</td><td>${e(r.customer)}</td><td>${r.price != null && r.price !== "" ? $(r.price) : "—"}</td><td>${e(r.tk || "—")}</td></tr>`,
+    )
+    .join("")}
+  <tr><td colspan="3" class="tot">Total Amount</td><td class="sum">${$(total)}</td><td></td></tr>
+</table>
+<div class="sign"><div>Customer Signature</div><div>Employee Signature</div><div>Authorized Signature</div></div>
+<div class="line"></div>
+</body></html>`;
+}
+
+async function buildAirInvoiceHtml({ orders, user, company }) {
+  // One invoice = one customer. orders[0].customer is "<code> · <name>".
+  const row = orders[0];
+  const [labelCode, ...rest] = String(row.customer || "").split(" · ");
+  let cust = null;
+  if (supabase) {
+    const pick = "name, customer_code, phone";
+    if (row.customer_id) {
+      const { data } = await supabase
+        .from("customers")
+        .select(pick)
+        .eq("id", row.customer_id)
+        .maybeSingle();
+      cust = data || null;
+    }
+    if (!cust && labelCode) {
+      const { data } = await supabase
+        .from("customers")
+        .select(pick)
+        .eq("customer_code", labelCode.trim())
+        .maybeSingle();
+      cust = data || null;
+    }
+  }
+  const customer = {
+    code: cust?.customer_code || labelCode || "—",
+    name: cust?.name || rest.join(" · ") || "—",
+    phone: cust?.phone || "—",
+  };
+  return airInvoiceHtml({
+    company,
+    customer,
+    rows: orders.map((o) => ({
+      shopOrderId: o.order_id,
+      customer: customer.name,
+      price: o.unit_price,
+      tk: o.tk,
+    })),
+    issuedBy: user?.name || user?.email || "—",
+    when: invoiceStamp(),
+  });
+}
+
+async function printAirInvoice(args) {
+  printInvoiceHtml(await buildAirInvoiceHtml(args));
+}
+
+// Staff: choose which of ONE customer's AIR orders go on a single invoice.
+function AirInvoiceModal({ row, onClose }) {
+  const { user } = useAuth();
+  const company = useSystemSettings()?.company;
+  const [orders, setOrders] = useState(null);
+  const [picked, setPicked] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState(null); // null = selection step
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      let list = [];
+      if (supabase && !String(row.id).startsWith("air-local-")) {
+        let q = supabase
+          .from("air_orders")
+          .select(
+            "id,order_id,customer,customer_id,tk,unit_price,status,created_at",
+          )
+          .order("created_at", { ascending: false });
+        q = row.customer_id
+          ? q.eq("customer_id", row.customer_id)
+          : q.eq("customer", row.customer);
+        const { data } = await q;
+        list = data || [];
+      } else {
+        list = airOrderLocalRows().filter((x) =>
+          row.customer_id
+            ? x.customer_id === row.customer_id
+            : x.customer === row.customer,
+        );
+      }
+      if (!list.some((x) => x.id === row.id)) list = [row, ...list];
+      list = list.map(normalizeAirRow);
+      if (!alive) return;
+      setOrders(list);
+      // Everything except refunded orders is ticked by default.
+      setPicked(
+        Object.fromEntries(
+          list.map((x) => [x.id, x.status !== AIR_ORDER_TERMINAL]),
+        ),
+      );
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [row.id]);
+  const chosen = (orders || []).filter((o) => picked[o.id]);
+  const total = chosen.reduce((a, o) => a + (Number(o.unit_price) || 0), 0);
+  // Step 1: build the invoice and show the preview screen (no print yet).
+  async function openPreview() {
+    setBusy(true);
+    try {
+      setPreviewHtml(
+        await buildAirInvoiceHtml({ orders: chosen, user, company }),
+      );
+    } catch (err) {
+      emitCBToast(
+        "err",
+        "Preview failed",
+        err.message || "Unable to prepare invoice.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Step 2: user confirmed on the preview screen → really print.
+  function confirmPrint() {
+    try {
+      printInvoiceHtml(previewHtml);
+      onClose();
+    } catch (err) {
+      emitCBToast(
+        "err",
+        "Print failed",
+        err.message || "Unable to print invoice.",
+      );
+    }
+  }
+  // ---- Preview screen (Print / Cancel) ----
+  if (previewHtml) {
+    // Screen-only padding so the preview looks like a paper page; print is untouched.
+    const framed = previewHtml.replace(
+      "</style>",
+      "@media screen{body{padding:28px 32px;background:#fff}}</style>",
+    );
+    return (
+      <div
+        className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+        onClick={onClose}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-5xl rounded-2xl bg-white shadow-2xl overflow-hidden"
+        >
+          <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+            <h3 className="font-bold text-lg">Print</h3>
+            <button type="button" onClick={onClose}>
+              <Icons.X size={18} />
+            </button>
+          </div>
+          <div className="p-5 bg-slate-50 max-h-[75vh] overflow-y-auto">
+            <iframe
+              title="Invoice preview"
+              srcDoc={framed}
+              onLoad={(e) => {
+                // Fit the iframe to the invoice so the whole page is visible at once.
+                const el = e.currentTarget;
+                const h = el.contentDocument?.documentElement?.scrollHeight;
+                if (h) el.style.height = h + "px";
+              }}
+              className="w-full h-[60vh] rounded-lg border border-slate-200 bg-white"
+            />
+          </div>
+          <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={confirmPrint}
+              className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold inline-flex items-center gap-2"
+            >
+              <Icons.Printer size={15} />
+              Print
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreviewHtml(null)}
+              className="h-10 px-5 rounded-xl border border-slate-300 bg-white text-sm font-semibold inline-flex items-center gap-2 hover:bg-slate-50"
+            >
+              <Icons.X size={15} />
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg rounded-2xl bg-white shadow-2xl overflow-hidden"
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-lg">Print Invoice</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {row.customer || "—"}
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            <Icons.X size={18} />
+          </button>
+        </div>
+        <div className="p-5 max-h-[60vh] overflow-y-auto">
+          {orders === null ? (
+            <p className="text-sm text-slate-400 py-6 text-center">Loading…</p>
+          ) : (
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={chosen.length === orders.length}
+                  onChange={(e) =>
+                    setPicked(
+                      Object.fromEntries(
+                        orders.map((o) => [o.id, e.target.checked]),
+                      ),
+                    )
+                  }
+                />
+                Select all ({orders.length})
+              </label>
+              {orders.map((o) => (
+                <label
+                  key={o.id}
+                  className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2.5 cursor-pointer hover:bg-slate-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!picked[o.id]}
+                    onChange={(e) =>
+                      setPicked({ ...picked, [o.id]: e.target.checked })
+                    }
+                  />
+                  <div className="flex-1 min-w-0">
+                    <b className="text-sm block truncate">{o.order_id}</b>
+                    <span className="text-xs text-slate-500">
+                      TK {o.tk || "—"} · {canonicalAirStatus(o.status)}
+                    </span>
+                  </div>
+                  <b className="text-sm">
+                    {o.unit_price != null ? money(o.unit_price) : "—"}
+                  </b>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-4 border-t border-slate-200 flex items-center justify-between gap-3">
+          <div className="text-sm">
+            <span className="text-slate-500">Total Order:</span>{" "}
+            <b>{chosen.length}</b>
+            <span className="text-slate-500 ml-3">Total:</span>{" "}
+            <b>{money(total)}</b>
+          </div>
+          <button
+            type="button"
+            disabled={busy || !chosen.length}
+            onClick={openPreview}
+            className="h-10 px-5 rounded-xl bg-blue-600 text-white text-sm font-bold disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            <Icons.Printer size={15} />
+            {busy ? "Preparing…" : "Print"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Sidebar card on the TK detail page.
 function PayShippingCard({ pkg, stage }) {
   const { user } = useAuth();
@@ -36698,6 +38174,22 @@ function PayShippingCard({ pkg, stage }) {
   const [bal, setBal] = useState(null);
   const [confirm, setConfirm] = useState(null); // "wallet" | "cash"
   const [tick, setTick] = useState(0);
+  const company = useSystemSettings()?.company;
+  const [printing, setPrinting] = useState(false);
+  async function printInvoice() {
+    setPrinting(true);
+    try {
+      await printShippingInvoice({ pkg, fee, user, company });
+    } catch (err) {
+      emitCBToast(
+        "err",
+        "Print failed",
+        err.message || "Unable to print invoice.",
+      );
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   useEffect(() => {
     if (!supabase || !pkg?.customer_id) return;
@@ -36783,8 +38275,17 @@ function PayShippingCard({ pkg, stage }) {
           </div>
         )}
       </div>
+      <button
+        type="button"
+        disabled={printing}
+        onClick={printInvoice}
+        className="mt-4 h-10 w-full rounded-xl border border-slate-200 text-sm font-bold text-slate-700 hover:bg-slate-50 inline-flex items-center justify-center gap-2 disabled:opacity-50"
+      >
+        <Icons.Printer size={15} />
+        {printing ? "Preparing…" : "Print Invoice"}
+      </button>
       {pending && canPay && (
-        <div className="mt-4 space-y-2">
+        <div className="mt-2 space-y-2">
           <button
             type="button"
             disabled={bal === null || bal < fee.due}
