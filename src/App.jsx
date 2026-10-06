@@ -38029,9 +38029,9 @@ function AirInvoiceModal({ row, onClose }) {
       "</style>",
       "@media screen{body{padding:28px 32px;background:#fff}}</style>",
     );
-    return (
+    return createPortal(
       <div
-        className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+        className="fixed inset-0 z-[80] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
         onClick={onClose}
       >
         <div
@@ -38076,12 +38076,13 @@ function AirInvoiceModal({ row, onClose }) {
             </button>
           </div>
         </div>
-      </div>
+      </div>,
+      document.body,
     );
   }
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[80] bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={onClose}
     >
       <div
@@ -38162,7 +38163,8 @@ function AirInvoiceModal({ row, onClose }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
